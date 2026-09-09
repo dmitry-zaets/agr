@@ -24,3 +24,20 @@ test('PR title check supports scopes and breaking changes and rejects missing co
   for (const title of ['fix: preserve progress', 'feat(ui)!: replace sidebar', 'docs: explain setup']) assert.ok(isConventionalTitle(title));
   for (const title of ['Update things', 'feat:', 'feat: \nextra', 'unknown: change']) assert.ok(!isConventionalTitle(title));
 });
+
+
+test('Marketplace verification uses the extension directory and restores cwd on success and failure', async () => {
+  const { inDirectory } = await import('../semantic-release-vsce.mjs');
+  const { readFile } = await import('node:fs/promises');
+  const path = await import('node:path');
+  const previous = process.cwd();
+  const directory = path.join(previous, 'extension');
+  const version = await inDirectory(directory, async () => {
+    const manifest = JSON.parse(await readFile('package.json', 'utf8'));
+    return manifest.engines.vscode;
+  });
+  assert.equal(version, '^1.95.0');
+  assert.equal(process.cwd(), previous);
+  await assert.rejects(inDirectory(directory, async () => { throw new Error('verification failed'); }), /verification failed/);
+  assert.equal(process.cwd(), previous);
+});
