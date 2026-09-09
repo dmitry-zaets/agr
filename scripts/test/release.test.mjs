@@ -41,3 +41,20 @@ test('Marketplace verification uses the extension directory and restores cwd on 
   await assert.rejects(inDirectory(directory, async () => { throw new Error('verification failed'); }), /verification failed/);
   assert.equal(process.cwd(), previous);
 });
+
+
+test('direct Marketplace verification authenticates to the publisher endpoint and fails closed', async () => {
+  const { verifyMarketplacePat } = await import('../semantic-release-vsce.mjs');
+  await verifyMarketplacePat('dmitry-zaets', 'fixture-token', async (url, options) => {
+    assert.ok(url.includes('/gallery.publisher/roleassignments/resources/dmitry-zaets?'));
+    assert.equal(options.redirect, 'error');
+    assert.equal(options.headers.Authorization, `Basic ${Buffer.from('OAuth:fixture-token').toString('base64')}`);
+    assert.ok(options.signal instanceof AbortSignal);
+    return { ok: true, json: async () => ({ value: [{ role: { name: 'Owner' } }] }) };
+  });
+  for (const status of [401, 403, 302, 500]) {
+    await assert.rejects(verifyMarketplacePat('publisher', 'fixture-token', async () => ({ ok: false, status })), new RegExp(`HTTP ${status}`));
+  }
+  await assert.rejects(verifyMarketplacePat('publisher', 'fixture-token', async () => { throw new Error('timeout'); }), /validity remains unknown/);
+  await assert.rejects(verifyMarketplacePat('publisher', 'fixture-token', async () => ({ ok: true, json: async () => ({}) })), /unexpected response/);
+});
