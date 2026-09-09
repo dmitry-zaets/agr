@@ -25,7 +25,7 @@ Authentication update
 
 Requires VS Code 1.95+, Git, Node.js 22+ for the skill helper, and Claude Code or Codex to generate a guide.
 
-1. Install the AGR VSIX using **Extensions → … → Install from VSIX…**. To build a VSIX from source, see [Development](#development). Marketplace publication is being prepared.
+1. Install [AGR from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=dmitry-zaets.agr), or run `code --install-extension dmitry-zaets.agr`. You can also install the VSIX from [GitHub Releases](https://github.com/dmitry-zaets/agr/releases).
 2. Open the Git repository you want to review in a trusted VS Code workspace.
 3. Run **AGR: Install Agent Skills in Repository** from the Command Palette.
 4. Ask your agent:
