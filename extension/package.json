@@ -1,0 +1,173 @@
+{
+  "name": "agr",
+  "displayName": "AGR \u2014 Agent-Guided Reviews",
+  "description": "Agent-guided reviews of PRs, branches, commits, staged and unstaged changes, with notes and persistent progress.",
+  "version": "0.3.0",
+  "publisher": "dmitry-zaets",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.cjs",
+  "activationEvents": [
+    "workspaceContains:agr.json"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    },
+    "virtualWorkspaces": false
+  },
+  "scripts": {
+    "vscode:prepublish": "node ../scripts/build.mjs",
+    "package": "vsce package --no-dependencies"
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agr",
+          "title": "AGR",
+          "icon": "media/agr.svg"
+        }
+      ]
+    },
+    "views": {
+      "agr": [
+        {
+          "id": "agr.steps",
+          "name": "AGR"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "agr.refresh",
+        "title": "Refresh",
+        "category": "AGR",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "agr.open",
+        "title": "Open Step",
+        "category": "AGR"
+      },
+      {
+        "command": "agr.toggle",
+        "title": "Toggle Reviewed",
+        "category": "AGR",
+        "icon": "$(check)"
+      },
+      {
+        "command": "agr.next",
+        "title": "Next Step",
+        "category": "AGR",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "agr.previous",
+        "title": "Previous Step",
+        "category": "AGR",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "agr.edit",
+        "title": "Open Guide File",
+        "category": "AGR",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "agr.snapshot",
+        "title": "Export Change Snapshot",
+        "category": "AGR"
+      },
+      {
+        "command": "agr.installSkill",
+        "title": "Install Agent Skills in Repository",
+        "category": "AGR"
+      },
+      {
+        "command": "agr.selectRepository",
+        "title": "Select Repository",
+        "category": "AGR",
+        "icon": "$(repo)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "agr.previous",
+          "when": "view == agr.steps",
+          "group": "navigation@1"
+        },
+        {
+          "command": "agr.next",
+          "when": "view == agr.steps",
+          "group": "navigation@2"
+        },
+        {
+          "command": "agr.refresh",
+          "when": "view == agr.steps",
+          "group": "navigation@3"
+        },
+        {
+          "command": "agr.edit",
+          "when": "view == agr.steps",
+          "group": "guide"
+        },
+        {
+          "command": "agr.selectRepository",
+          "when": "view == agr.steps",
+          "group": "guide"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "agr.toggle",
+          "when": "view == agr.steps && viewItem == step",
+          "group": "inline"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "agr.steps",
+        "contents": "Read changes in the order that tells their story.\n[Install skills for Claude Code and Codex](command:agr.installSkill)\nThen ask your agent to create a review guide.\n[Export change snapshot](command:agr.snapshot)"
+      }
+    ],
+    "jsonValidation": [
+      {
+        "fileMatch": "**/agr.json",
+        "url": "./dist/guide.schema.json"
+      }
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dmitry-zaets/agr.git",
+    "directory": "extension"
+  },
+  "homepage": "https://github.com/dmitry-zaets/agr#readme",
+  "bugs": {
+    "url": "https://github.com/dmitry-zaets/agr/issues"
+  },
+  "keywords": [
+    "code review",
+    "AI",
+    "Claude",
+    "Codex",
+    "Git",
+    "guided review"
+  ],
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#172033",
+    "theme": "dark"
+  },
+  "vsce": {
+    "dependencies": false
+  }
+}

@@ -1,0 +1,10 @@
+node_modules/
+extension/dist/
+extension/*.vsix
+.vscode-test/
+agr.json
+agr.snapshot.json
+.DS_Store
+agr.scope.json
+
+/agr.vsix

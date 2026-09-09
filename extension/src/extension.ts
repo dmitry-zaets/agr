@@ -1,0 +1,381 @@
+import * as vscode from 'vscode';
+import { appendReviewText } from './commentText';
+import path from 'node:path';
+import { cp, mkdir, access } from 'node:fs/promises';
+import { allSteps, Change, Guide, hash, parseGuide, selectedChanges, Snapshot, Step, stepFingerprint, stepState, uncoveredChanges } from '../../packages/core/src/model';
+import { git, repositoryRoot } from '../../packages/core/src/git';
+import { changeContent, snapshotForGuide, scopeLabel } from '../../packages/core/src/scope';
+
+class Item extends vscode.TreeItem {
+  children: Item[] = [];
+  constructor(label: string, public step?: Step, public change?: Change) { super(label); }
+}
+
+class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentProvider, vscode.Disposable {
+  private readonly changed = new vscode.EventEmitter<void>();
+  readonly onDidChangeTreeData = this.changed.event;
+  private readonly documents = new Map<string, string>();
+  private readonly comments = vscode.comments.createCommentController('agr', 'AGR');
+  private readonly decoration = vscode.window.createTextEditorDecorationType({
+    isWholeLine: true,
+    borderWidth: '0 0 0 3px', borderStyle: 'solid', borderColor: new vscode.ThemeColor('focusBorder'),
+    overviewRulerColor: new vscode.ThemeColor('focusBorder'), overviewRulerLane: vscode.OverviewRulerLane.Right
+  });
+  private threads: vscode.CommentThread[] = [];
+  private highlights = new Map<string, vscode.Range[]>();
+  private readonly disposables: vscode.Disposable[] = [];
+  private timer?: ReturnType<typeof setTimeout>;
+  private generation = 0;
+  private refreshing?: Promise<void>;
+  private refreshAgain = false;
+  private mutation: Promise<void> = Promise.resolve();
+  private pendingReviews = new Map<string, { token: symbol; reviewed: boolean }>();
+  private items: Item[] = [];
+  private root?: string;
+  private guide?: Guide;
+  private snapshot?: Snapshot;
+  private activeId?: string;
+  private openedFingerprints = new Map<string, string>();
+  readonly view: vscode.TreeView<Item>;
+
+  constructor(private context: vscode.ExtensionContext) {
+    this.view = vscode.window.createTreeView('agr.steps', { treeDataProvider: this, manageCheckboxStateManually: true, showCollapseAll: true });
+    this.disposables.push(this.view, this.comments, this.decoration, this.changed,
+      vscode.workspace.registerTextDocumentContentProvider('agr', this),
+      this.view.onDidChangeCheckboxState(event => {
+        for (const [item, state] of event.items) this.runToggle(item, state === vscode.TreeItemCheckboxState.Checked);
+      }),
+      vscode.window.onDidChangeVisibleTextEditors(() => this.decorate()),
+      vscode.workspace.onDidSaveTextDocument(() => this.schedule()),
+      vscode.workspace.onDidChangeWorkspaceFolders(() => { this.root = undefined; this.schedule(); })
+    );
+    const watcher = vscode.workspace.createFileSystemWatcher('**/*');
+    const observe = (uri: vscode.Uri) => {
+      const relative = this.root ? path.relative(this.root, uri.fsPath) : '';
+      if (!relative.split(path.sep).some(p => ['node_modules', '.git', 'dist'].includes(p)) && !relative.endsWith('agr.snapshot.json')) this.schedule();
+    };
+    this.disposables.push(watcher, watcher.onDidChange(observe), watcher.onDidCreate(observe), watcher.onDidDelete(observe));
+  }
+  dispose(): void { if (this.timer) clearTimeout(this.timer); this.threads.forEach(t => t.dispose()); this.disposables.forEach(d => d.dispose()); }
+  provideTextDocumentContent(uri: vscode.Uri): string { return this.documents.get(uri.toString()) ?? ''; }
+  getTreeItem(item: Item): vscode.TreeItem {
+    const pending = item.step && this.pendingReviews.get(item.step.id);
+    if (!pending) return item;
+    return Object.assign(new vscode.TreeItem(item.label ?? ''), item, {
+      iconPath: new vscode.ThemeIcon('loading~spin'),
+      description: 'Saving review…',
+      checkboxState: pending.reviewed ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked
+    });
+  }
+  getChildren(item?: Item): Item[] { return item?.children ?? this.items; }
+  getParent(item: Item): Item | undefined { return this.items.find(parent => parent.children.includes(item)); }
+  private schedule(): void { if (this.timer) clearTimeout(this.timer); this.timer = setTimeout(() => void this.refresh(), 650); }
+
+  async selectRepository(): Promise<void> {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    const roots = [...new Set(await Promise.all(folders.map(async folder => {
+      try { return await repositoryRoot(folder.uri.fsPath); } catch { return ''; }
+    })))].filter(Boolean);
+    if (!roots.length) throw new Error('Open a local Git repository in VS Code first.');
+    const picked = roots.length === 1 ? roots[0] : await vscode.window.showQuickPick(roots, { title: 'Choose repository to review' });
+    if (picked) {
+      this.root = picked;
+      this.activeId = undefined;
+      this.openedFingerprints.clear();
+      this.threads.forEach(t => t.dispose()); this.threads = [];
+      this.highlights.clear(); this.decorate();
+      await this.context.workspaceState.update('agr.root', picked);
+      // Watch the actual Git directory too (including worktree HEAD and index).
+      const gitDir = (await git(picked, ['rev-parse', '--absolute-git-dir'])).trim();
+      const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(gitDir, '{HEAD,index,refs/**,packed-refs}'));
+      this.disposables.push(watcher, watcher.onDidChange(() => this.schedule()), watcher.onDidCreate(() => this.schedule()));
+    }
+    await this.refresh();
+  }
+
+  async refresh(): Promise<void> {
+    if (this.refreshing) { this.refreshAgain = true; return this.refreshing; }
+    this.refreshing = (async () => {
+      do { this.refreshAgain = false; await this.refreshOnce(); } while (this.refreshAgain);
+    })();
+    try { await this.refreshing; } finally { this.refreshing = undefined; }
+  }
+  private async refreshOnce(): Promise<void> {
+    const generation = ++this.generation;
+    try {
+      if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace to read its Git changes.');
+      if (!this.root) {
+        const folders = vscode.workspace.workspaceFolders ?? [];
+        const saved = this.context.workspaceState.get<string>('agr.root');
+        this.root = saved && folders.some(f => saved === f.uri.fsPath || f.uri.fsPath.startsWith(saved + path.sep))
+          ? saved : folders[0] ? await repositoryRoot(folders[0].uri.fsPath) : undefined;
+      }
+      if (!this.root) { this.items = []; this.view.message = 'Open a Git repository to begin.'; this.changed.fire(); return; }
+      let guide: Guide | undefined;
+      let invalid: string | undefined;
+      try {
+        const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(path.join(this.root, 'agr.json')));
+        guide = parseGuide(Buffer.from(bytes).toString('utf8'));
+      } catch (error) {
+        if (!(error instanceof vscode.FileSystemError && error.code === 'FileNotFound')) invalid = (error as Error).message;
+      }
+      const snapshot = await snapshotForGuide(this.root, guide);
+      if (generation !== this.generation) return;
+      this.snapshot = snapshot; this.guide = guide;
+      this.items = [];
+      const changes = new Map(snapshot.changes.map(c => [c.id, c]));
+      let reviewed = 0;
+      if (guide) {
+        for (const [index, group] of guide.groups.entries()) {
+          const parent = new Item(`${index + 1}. ${group.title}`);
+          parent.id = group.id;
+          parent.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
+          parent.children = group.steps.map(step => {
+            const state = stepState(step, snapshot, guide.base);
+            if (state === 'reviewed') reviewed++;
+            const item = new Item(step.title, step);
+            item.id = step.id; item.contextValue = 'step';
+            const files = [...new Set(step.changes.map(id => changes.get(id)?.file).filter(Boolean))] as string[];
+            item.description = state === 'stale' ? 'Needs another look' : `${files.map(f => path.basename(f)).join(', ')}${step.optional ? ' · optional' : ''}`;
+            const tooltip = new vscode.MarkdownString();
+            appendReviewText(tooltip, step.note);
+            if (step.focus) appendReviewText(tooltip.appendMarkdown('\n\n'), `Check: ${step.focus}`);
+            appendReviewText(tooltip.appendMarkdown('\n\n'), files.join('\n'));
+            item.tooltip = tooltip;
+            item.checkboxState = state === 'reviewed' ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked;
+            item.iconPath = new vscode.ThemeIcon(state === 'stale' ? 'warning' : state === 'reviewed' ? 'pass' : 'circle-outline');
+            item.command = { command: 'agr.open', title: 'Open Step', arguments: [item] };
+            return item;
+          });
+          this.items.push(parent);
+        }
+      } else {
+        const setup = new Item('Install skills for Claude Code and Codex');
+        setup.iconPath = new vscode.ThemeIcon('sparkle');
+        setup.command = { command: 'agr.installSkill', title: 'Install skills' };
+        this.items.push(setup);
+      }
+      const uncovered = uncoveredChanges(guide, snapshot);
+      if (uncovered.length) {
+        const parent = new Item(`Unguided changes (${uncovered.length})`);
+        parent.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
+        parent.iconPath = new vscode.ThemeIcon('warning');
+        parent.children = uncovered.map(change => {
+          const item = new Item(`${path.basename(change.file)} · ${change.kind === 'text' ? `L${change.newLines ? change.newStart : change.oldStart}` : change.kind}`, undefined, change);
+          item.description = path.dirname(change.file);
+          item.tooltip = change.file;
+          item.command = { command: 'agr.open', title: 'Open Change', arguments: [item] };
+          return item;
+        });
+        this.items.push(parent);
+      }
+      this.view.title = guide?.title ?? 'AGR';
+      this.view.message = invalid ? `Guide error: ${invalid}` : guide
+        ? `${reviewed} / ${allSteps(guide).length} reviewed · ${uncovered.length} unguided\n${scopeLabel(snapshot)}${guide.summary ? '\n' + guide.summary : ''}`
+        : 'Ask your agent to create agr.json using the agr skill.';
+      this.changed.fire();
+    } catch (error) {
+      if (generation !== this.generation) return;
+      this.snapshot = undefined; this.guide = undefined; this.items = [];
+      this.view.message = (error as Error).message; this.changed.fire();
+    }
+  }
+
+  private virtual(file: string, side: string, content: string): vscode.Uri {
+    const uri = vscode.Uri.from({ scheme: 'agr', path: '/' + side + '/' + file, query: hash(content) });
+    this.documents.set(uri.toString(), content);
+    return uri;
+  }
+  private range(start: number, count: number, content: string): vscode.Range {
+    const last = Math.max(0, content.split('\n').length - 1);
+    const first = Math.max(0, Math.min(last, start - 1));
+    return new vscode.Range(first, 0, Math.min(last, first + Math.max(count, 1) - 1), Number.MAX_SAFE_INTEGER);
+  }
+  private decorate(): void {
+    for (const editor of vscode.window.visibleTextEditors) editor.setDecorations(this.decoration, this.highlights.get(editor.document.uri.toString()) ?? []);
+  }
+  async open(item?: Item): Promise<void> {
+    if (!item) item = this.items.flatMap(i => i.children).find(i => i.step?.id === this.activeId);
+    if (!item || (!item.step && !item.change)) return;
+    if (!this.snapshot) await this.refresh();
+    if (!this.snapshot || !this.root) throw new Error('Could not read current Git changes.');
+    const step = item.step && this.guide ? allSteps(this.guide).find(s => s.id === item!.step!.id) : undefined;
+    const ids = step?.changes ?? (item.change ? [item.change.id] : []);
+    const requestedFiles = [...new Set(this.snapshot.changes.filter(c => ids.includes(c.id)).map(c => c.file))];
+    // Opening a step must not wait for every unrelated file to be scanned.
+    // Revalidate its files so anchors still refer to the code being displayed.
+    const current = await snapshotForGuide(this.root, this.guide, requestedFiles);
+    const selected = step ? selectedChanges(step, current) : item.change && current.changes.some(c => c.id === item!.change!.id) ? [item.change] : [];
+    if (selected.length !== ids.length || !ids.length || (step && this.guide?.base !== current.base)) {
+      throw new Error('This step is out of date. Ask your agent to regenerate the guide; current changes are listed under Unguided changes.');
+    }
+    this.activeId = step?.id;
+    if (step) this.openedFingerprints.set(step.id, stepFingerprint(step, current));
+    this.threads.forEach(t => t.dispose()); this.threads = []; this.highlights.clear();
+    // Reverse opening order leaves the first file focused while all related files remain available.
+    const files = [...new Map(selected.map(c => [JSON.stringify([c.comparisonId, c.file]), c])).values()];
+    for (const representative of [...files].reverse()) {
+      const file = representative.file;
+      const before = await changeContent(this.root, current, representative, 'original');
+      const after = await changeContent(this.root, current, representative, 'modified');
+      const changes = selected.filter(c => c.file === file && c.comparisonId === representative.comparisonId);
+      if (changes.some(c => c.kind === 'binary')) {
+        void vscode.window.showInformationMessage(`${file}: binary change. Review this file with an appropriate viewer, then mark the step reviewed.`);
+        continue;
+      }
+      const comparison = current.scope?.comparisons.find(c => c.id === representative.comparisonId);
+      const leftLabel = comparison ? `${comparison.id}/${comparison.kind === 'unstaged' ? 'Index' : comparison.base?.slice(0, 8) ?? 'Empty'}` : 'HEAD';
+      const rightLabel = comparison ? `${comparison.id}/${comparison.kind === 'staged' ? 'Index' : comparison.head?.slice(0, 8) ?? 'Working-tree'}` : 'Working-tree';
+      const left = this.virtual(file, leftLabel, before);
+      const right = this.virtual(file, rightLabel, after);
+      const original = changes.filter(c => c.oldLines > 0).map(c => this.range(c.oldStart, c.oldLines, before));
+      const modified = changes.filter(c => c.newLines > 0).map(c => this.range(c.newStart, c.newLines, after));
+      this.highlights.set(left.toString(), original); this.highlights.set(right.toString(), modified);
+      const first = changes[0];
+      const target = first.newLines ? this.range(first.newStart, first.newLines, after) : this.range(first.newStart || 1, 1, after);
+      await vscode.commands.executeCommand('vscode.diff', left, right, `${step?.title ?? 'Unguided change'} — ${path.basename(file)}${comparison ? ` [${comparison.title ?? comparison.id}]` : ''}`, { preview: false, selection: new vscode.Range(target.start, target.start) });
+      if (step) {
+        const isDeletion = first.newLines === 0 && first.oldLines > 0;
+        const body = new vscode.MarkdownString();
+        appendReviewText(body, step.note);
+        if (step.focus) appendReviewText(body.appendMarkdown('\n\n'), `Check: ${step.focus}`);
+        if (changes.some(c => c.kind === 'metadata')) appendReviewText(body.appendMarkdown('\n\n'), changes.filter(c => c.kind === 'metadata').map(c => c.patch).join('\n'));
+        const anchor = isDeletion ? original[0].start : target.start;
+        const thread = this.comments.createCommentThread(isDeletion ? left : right, new vscode.Range(anchor, anchor), [{ body, mode: vscode.CommentMode.Preview, author: { name: 'AGR' } }]);
+        thread.label = step.title; thread.canReply = false;
+        thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+        this.threads.push(thread);
+      }
+    }
+    this.decorate();
+  }
+
+  runToggle(item?: Item, desired?: boolean): void {
+    void this.toggle(item, desired).catch(async error => {
+      void vscode.window.showErrorMessage((error as Error).message);
+      await this.refresh();
+    });
+  }
+  async toggle(item?: Item, desired?: boolean): Promise<void> {
+    const id = item?.step?.id ?? this.activeId;
+    const current = this.items.flatMap(group => group.children).find(entry => entry.step?.id === id);
+    if (!id || !current) return;
+    const reviewed = desired ?? !(this.pendingReviews.get(id)?.reviewed ?? (current.checkboxState === vscode.TreeItemCheckboxState.Checked));
+    const token = Symbol(id);
+    this.pendingReviews.set(id, { token, reviewed });
+    this.changed.fire();
+    const result = this.mutation.then(() => this.toggleOnce(current, reviewed)).finally(() => {
+      if (this.pendingReviews.get(id)?.token === token) this.pendingReviews.delete(id);
+      this.changed.fire();
+    });
+    this.mutation = result.catch(() => {});
+    return result;
+  }
+  private async toggleOnce(item?: Item, desired?: boolean): Promise<void> {
+    const id = item?.step?.id ?? this.activeId;
+    if (!id || !this.root) return;
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(this.root, 'agr.json')));
+    if (document.isDirty) throw new Error('Save the guide file before changing review progress.');
+    // Agents write this file outside the editor. Its saved content may be newer
+    // than an already-open text document while VS Code's file watcher catches up.
+    const savedText = Buffer.from(await vscode.workspace.fs.readFile(document.uri)).toString('utf8');
+    const guide = parseGuide(savedText);
+    const step = allSteps(guide).find(s => s.id === id);
+    if (!step) throw new Error('This step was removed. Refresh the guide.');
+    const known = this.snapshot?.changes.filter(change => step.changes.includes(change.id)) ?? [];
+    const files = known.length === step.changes.length ? [...new Set(known.map(change => change.file))] : undefined;
+    const snapshot = await snapshotForGuide(this.root, guide, files);
+    const reviewed = desired ?? stepState(step, snapshot, guide.base) !== 'reviewed';
+    if (reviewed) {
+      if (guide.base !== snapshot.base || selectedChanges(step, snapshot).length !== step.changes.length) throw new Error('The code in this step changed. Regenerate the guide before marking it reviewed.');
+      const fingerprint = stepFingerprint(step, snapshot);
+      const opened = this.openedFingerprints.get(step.id);
+      if (opened && opened !== fingerprint) throw new Error('This step changed since you opened it. Open its diff again before marking it reviewed.');
+      step.review = { status: 'reviewed', fingerprint, reviewedAt: new Date().toISOString() };
+    } else step.review = { status: 'pending' };
+    // A clean document may reload our previous save while another toggle is
+    // queued. Only unsaved edits or changed disk content represent a conflict.
+    if (document.isDirty) throw new Error('The guide changed while updating progress. Try again.');
+    if (Buffer.from(await vscode.workspace.fs.readFile(document.uri)).toString('utf8') !== savedText) throw new Error('The guide changed while updating progress. Try again.');
+    // Write the saved artifact directly: an agent may have updated it while an
+    // editor still has an older disk timestamp. Never dirty a stale editor buffer.
+    await vscode.workspace.fs.writeFile(document.uri, Buffer.from(JSON.stringify(guide, null, 2) + '\n'));
+    this.generation++;
+    this.guide = guide;
+    const current = this.items.flatMap(group => group.children).find(entry => entry.step?.id === id);
+    if (current) {
+      current.step = step;
+      current.checkboxState = reviewed ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked;
+      current.iconPath = new vscode.ThemeIcon(reviewed ? 'pass' : 'circle-outline');
+      current.description = `${[...new Set(snapshot.changes.filter(change => step.changes.includes(change.id)).map(change => path.basename(change.file)))].join(', ')}${step.optional ? ' · optional' : ''}`;
+    }
+    if (this.snapshot && this.snapshot.base === snapshot.base) {
+      const count = allSteps(guide).filter(entry => stepState(entry, this.snapshot!, guide.base) === 'reviewed').length;
+      this.view.message = `${count} / ${allSteps(guide).length} reviewed · ${uncoveredChanges(guide, this.snapshot).length} unguided\n${scopeLabel(this.snapshot)}${guide.summary ? '\n' + guide.summary : ''}`;
+    }
+    this.changed.fire();
+    this.schedule();
+  }
+  async navigate(direction: number): Promise<void> {
+    const steps = this.items.flatMap(i => i.children).filter(i => i.step);
+    const index = steps.findIndex(i => i.step?.id === this.activeId);
+    const next = steps[index < 0 ? (direction > 0 ? 0 : steps.length - 1) : index + direction];
+    if (next) { await this.open(next); const current = this.items.flatMap(i => i.children).find(i => i.step?.id === next.step?.id); if (current) await this.view.reveal(current, { select: true }); }
+  }
+  async edit(): Promise<void> {
+    if (!this.root) throw new Error('Open a Git repository first.');
+    await vscode.window.showTextDocument(vscode.Uri.file(path.join(this.root, 'agr.json')));
+  }
+  async exportSnapshot(): Promise<void> {
+    await this.refresh();
+    if (!this.snapshot || !this.root) throw new Error('Open a Git repository first.');
+    const uri = vscode.Uri.file(path.join(this.root, 'agr.snapshot.json'));
+    await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(this.snapshot, null, 2) + '\n'));
+    await vscode.window.showTextDocument(uri);
+  }
+  async installSkill(): Promise<void> {
+    await this.refresh();
+    if (!this.root) throw new Error('Open a Git repository first.');
+    const installed: string[] = [];
+    for (const folder of ['.agents', '.claude']) {
+      const target = path.join(this.root, folder, 'skills', 'agr');
+      try { await access(target); throw new Error(`${target} already exists. Move it aside before installing a new copy.`); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    }
+    for (const folder of ['.agents', '.claude']) {
+      const target = path.join(this.root, folder, 'skills', 'agr');
+      await mkdir(path.dirname(target), { recursive: true });
+      await cp(this.context.asAbsolutePath('dist/skill'), target, { recursive: true, force: false, errorOnExist: true });
+      installed.push(path.relative(this.root, target));
+    }
+    void vscode.window.showInformationMessage(`Installed ${installed.join(' and ')}. Ask your agent: “Use the agr skill to guide my uncommitted changes.”`);
+  }
+  getState(): { guide?: Guide; snapshot?: Snapshot; items: Item[] } { return { guide: this.guide, snapshot: this.snapshot, items: this.items }; }
+}
+
+export async function activate(context: vscode.ExtensionContext) {
+  const app = new Agr(context);
+  context.subscriptions.push(app);
+  const command = (name: string, handler: (...args: any[]) => unknown) => context.subscriptions.push(vscode.commands.registerCommand(`agr.${name}`, async (...args) => {
+    try { return await handler(...args); } catch (error) { await vscode.window.showErrorMessage((error as Error).message); }
+  }));
+  command('refresh', () => app.refresh());
+  command('selectRepository', () => app.selectRepository());
+  command('open', item => vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Opening review step…' }, () => app.open(item)));
+  command('toggle', item => app.toggle(item));
+  command('next', () => app.navigate(1));
+  command('previous', () => app.navigate(-1));
+  command('edit', () => app.edit());
+  command('snapshot', () => app.exportSnapshot());
+  command('installSkill', () => app.installSkill());
+  // Git events cover index/HEAD changes that do not touch working files.
+  const extension = vscode.extensions.getExtension('vscode.git');
+  if (extension) {
+    const api = (await extension.activate()).getAPI(1);
+    const observe = (repo: { state: { onDidChange: (listener: () => void) => vscode.Disposable } }) => context.subscriptions.push(repo.state.onDidChange(() => void app.refresh()));
+    api.repositories.forEach(observe);
+    context.subscriptions.push(api.onDidOpenRepository(observe));
+  }
+  await app.refresh();
+  return app;
+}

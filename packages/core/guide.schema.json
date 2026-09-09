@@ -1,0 +1,314 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AGR",
+  "type": "object",
+  "required": [
+    "version",
+    "title",
+    "comparison",
+    "base",
+    "groups"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "summary": {
+      "type": "string"
+    },
+    "comparison": {
+      "enum": [
+        "head-to-working-tree",
+        "scoped"
+      ]
+    },
+    "base": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[a-f0-9]{40,64}$",
+      "description": "Copy from the snapshot: a commit for legacy guides, or an opaque scope fingerprint for scoped guides."
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "steps"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "title",
+                "note",
+                "changes"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "note": {
+                  "type": "string"
+                },
+                "focus": {
+                  "type": "string"
+                },
+                "optional": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "changes": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^c_[a-f0-9]{64}$"
+                  }
+                },
+                "selections": {
+                  "type": "object",
+                  "description": "Optional inclusive 1-based offsets within each hunk's removed/added lines. Omit to review the whole hunk.",
+                  "additionalProperties": {
+                    "type": "object",
+                    "minProperties": 1,
+                    "additionalProperties": false,
+                    "properties": {
+                      "original": {
+                        "$ref": "#/definitions/offsetRange"
+                      },
+                      "modified": {
+                        "$ref": "#/definitions/offsetRange"
+                      }
+                    }
+                  }
+                },
+                "review": {
+                  "type": "object",
+                  "required": [
+                    "status"
+                  ],
+                  "properties": {
+                    "status": {
+                      "enum": [
+                        "pending",
+                        "reviewed"
+                      ]
+                    },
+                    "fingerprint": {
+                      "type": "string"
+                    },
+                    "reviewedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "scope": {
+      "$ref": "#/definitions/scope"
+    }
+  },
+  "definitions": {
+    "offsetRange": {
+      "type": "object",
+      "required": [
+        "start",
+        "end"
+      ],
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "required": [
+        "comparisons"
+      ],
+      "properties": {
+        "comparisons": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/comparison"
+          }
+        }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "title": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "working-tree",
+            "staged",
+            "unstaged",
+            "revisions"
+          ]
+        },
+        "base": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head": {
+          "type": "string"
+        },
+        "includeUntracked": {
+          "type": "boolean"
+        },
+        "paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          },
+          "description": "Literal repository-relative files/directories. Omit for all paths; glob patterns are unsupported."
+        },
+        "baseRef": {
+          "const": "HEAD",
+          "description": "Set by the helper for local comparisons whose baseline follows HEAD."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "revisions"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "base",
+              "head"
+            ],
+            "properties": {
+              "base": {
+                "type": "string",
+                "minLength": 1
+              },
+              "head": {
+                "minLength": 1
+              }
+            }
+          },
+          "else": {
+            "not": {
+              "required": [
+                "head"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "unstaged"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "base"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "staged",
+                  "revisions"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "includeUntracked": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "comparison": {
+            "const": "scoped"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "scope"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "scope"
+          ]
+        }
+      }
+    }
+  ]
+}

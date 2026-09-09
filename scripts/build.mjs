@@ -1,0 +1,13 @@
+import { build } from 'esbuild';
+import { mkdir, copyFile, cp, rm } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+const root = fileURLToPath(new URL('../', import.meta.url));
+process.chdir(root);
+await rm('extension/dist', { recursive: true, force: true });
+await mkdir('extension/dist', { recursive: true });
+await build({ absWorkingDir: root, entryPoints: ['extension/src/extension.ts'], outfile: 'extension/dist/extension.cjs', bundle: true, platform: 'node', target: 'node20', external: ['vscode'], sourcemap: true });
+await build({ absWorkingDir: root, entryPoints: ['packages/core/src/cli.ts'], outfile: 'skills/agr/scripts/agr.cjs', bundle: true, platform: 'node', target: 'node20' });
+await copyFile('packages/core/guide.schema.json', 'extension/dist/guide.schema.json');
+await copyFile('packages/core/guide.schema.json', 'skills/agr/guide.schema.json');
+await cp('skills/agr', 'extension/dist/skill', { recursive: true });
+await copyFile('LICENSE', 'extension/LICENSE');

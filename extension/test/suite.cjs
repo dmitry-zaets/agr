@@ -1,0 +1,107 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const vscode = require('vscode');
+
+exports.run = async function () {
+  const root = vscode.workspace.workspaceFolders[0].uri.fsPath;
+  const extension = vscode.extensions.getExtension('dmitry-zaets.agr');
+  assert.ok(extension, 'extension is discovered');
+  const app = await extension.activate();
+  await app.refresh();
+  assert.ok(app.getState().snapshot, app.view.message);
+  assert.equal(app.getState().snapshot.changes.length, 2);
+  assert.equal(app.getState().items.length, 2, 'two conceptual sections');
+
+  let step = app.getState().items[0].children[0];
+  assert.ok(!step.tooltip.value.includes('&nbsp;'), 'prose has normal spaces so comments can wrap');
+  assert.ok(step.tooltip.value.includes('\n'), 'authored line breaks are preserved');
+  assert.ok(step.tooltip.value.includes('\\[links\\]'), 'guide text remains escaped rather than becoming an executable Markdown link');
+  assert.ok(!step.tooltip.isTrusted, 'guide text does not enable trusted commands');
+  await vscode.commands.executeCommand(step.command.command, ...step.command.arguments);
+  assert.ok(vscode.window.visibleTextEditors.some(e => e.document.uri.scheme === 'agr'), 'native diff snapshot editors opened');
+  assert.ok(vscode.window.visibleTextEditors.filter(e => e.document.uri.scheme === 'agr').every(e => e.selection.isEmpty), 'opening a step does not select the reviewed code');
+  assert.ok(vscode.workspace.textDocuments.some(d => d.uri.scheme === 'agr' && d.getText().includes('first = 10')), 'working snapshot contains new code');
+  const saving = app.toggle(step, true);
+  assert.equal(app.getTreeItem(step).description, 'Saving review…', 'feedback appears before disk validation completes');
+  assert.equal(app.getTreeItem(step).checkboxState, vscode.TreeItemCheckboxState.Checked);
+  await saving;
+  let guide = JSON.parse(await fs.readFile(path.join(root, 'agr.json'), 'utf8'));
+  assert.equal(guide.groups[0].steps[0].review.status, 'reviewed', 'progress saved to guide');
+  assert.ok(guide.groups[0].steps[0].review.fingerprint);
+  assert.equal(app.getState().items[0].children[0].checkboxState, vscode.TreeItemCheckboxState.Checked);
+  assert.notEqual(app.getTreeItem(app.getState().items[0].children[0]).description, 'Saving review…');
+  await Promise.all([app.toggle(step, false), app.toggle(step, true)]);
+  guide = JSON.parse(await fs.readFile(path.join(root, 'agr.json'), 'utf8'));
+  assert.equal(guide.groups[0].steps[0].review.status, 'reviewed', 'rapid toggles preserve the last requested state');
+
+  await app.navigate(1);
+  await app.toggle(undefined, true);
+  guide = JSON.parse(await fs.readFile(path.join(root, 'agr.json'), 'utf8'));
+  assert.equal(guide.groups[1].steps[0].review.status, 'reviewed', 'next navigates within same file to second concern');
+  await fs.writeFile(path.join(root, 'feature.ts'), 'export const first = 100;\n\nexport const middle = 2;\n\nexport const last = 30;\n');
+  await app.refresh();
+  assert.equal(app.getState().items[0].children[0].description, 'Needs another look');
+  assert.equal(app.getState().items[1].children[0].checkboxState, vscode.TreeItemCheckboxState.Checked, 'unrelated hunk remains reviewed');
+  assert.equal(app.getState().items[2].children.length, 1, 'edited hunk is uncovered');
+  await assert.rejects(app.toggle(app.getState().items[0].children[0], true), /changed/);
+  assert.equal(app.getTreeItem(app.getState().items[0].children[0]).checkboxState, vscode.TreeItemCheckboxState.Unchecked, 'failed saves roll back optimistic state');
+  assert.notEqual(app.getTreeItem(app.getState().items[0].children[0]).description, 'Saving review…');
+
+  await fs.writeFile(path.join(root, 'new.ts'), 'one\ntwo\nthree\nfour\n');
+  await app.refresh();
+  const added = app.getState().snapshot.changes.find(c => c.file === 'new.ts');
+  guide.groups.push({ id: 'split-file', title: 'Parts of a new file', steps: [
+    { id: 'new-first', title: 'First half', note: 'Read the beginning.', changes: [added.id], selections: { [added.id]: { modified: { start: 1, end: 2 } } } },
+    { id: 'new-last', title: 'Second half', note: 'Read the ending.', changes: [added.id], selections: { [added.id]: { modified: { start: 3, end: 4 } } } }
+  ] });
+  const document = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(root, 'agr.json')));
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), JSON.stringify(guide, null, 2));
+  await vscode.workspace.applyEdit(edit); await document.save();
+  await app.refresh();
+  const lastPart = app.getState().items[2].children[1];
+  await app.open(lastPart);
+  assert.ok(vscode.window.visibleTextEditors.some(editor => editor.document.uri.path === '/Working-tree/new.ts' && editor.selection.start.line === 2), 'second range opens at line 3 within one added hunk');
+  assert.ok(vscode.window.visibleTextEditors.filter(editor => editor.document.uri.path === '/Working-tree/new.ts').every(editor => editor.selection.isEmpty), 'range navigation moves the cursor without a selection overlay');
+  await app.toggle(lastPart, true);
+  assert.equal(app.getState().items[2].children[0].checkboxState, vscode.TreeItemCheckboxState.Unchecked, 'first slice remains pending');
+  assert.equal(app.getState().items[2].children[1].checkboxState, vscode.TreeItemCheckboxState.Checked, 'second slice is reviewed');
+
+  const { execFileSync } = require('node:child_process');
+  const helper = path.resolve(__dirname, '../dist/skill/scripts/agr.cjs');
+  const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+  const baseCommit = git('rev-parse', 'HEAD');
+  git('add', 'feature.ts');
+  await fs.writeFile(path.join(root, 'feature.ts'), 'export const first = 1000;\n\nexport const middle = 2;\n\nexport const last = 30;\n');
+  async function loadScope(scope) {
+    const recipe = path.join(root, 'agr.scope.json');
+    await fs.writeFile(recipe, JSON.stringify(scope));
+    const snapshot = JSON.parse(execFileSync('node', [helper, 'snapshot', root, '--scope', recipe], { encoding: 'utf8' }));
+    const scopedGuide = { version: 1, title: 'Scoped review', comparison: snapshot.comparison, base: snapshot.base, scope: snapshot.scope,
+      groups: [{ id: 'scoped', title: 'Stages', steps: scope.comparisons.map(c => ({ id: c.id, title: c.id, note: 'Review this version.', changes: snapshot.changes.filter(change => change.comparisonId === c.id).map(change => change.id) })) }] };
+    await vscode.workspace.fs.writeFile(vscode.Uri.file(path.join(root, 'agr.json')), Buffer.from(JSON.stringify(scopedGuide)));
+    await app.refresh();
+    assert.equal(app.getState().guide.comparison, 'scoped');
+    assert.equal(app.getState().items.length, 1, 'scoped coverage excludes unrelated local files');
+  }
+  await loadScope({ comparisons: [{ id: 'stage', kind: 'staged', paths: ['feature.ts'] }, { id: 'work', kind: 'unstaged', paths: ['feature.ts'] }] });
+  await app.open(app.getState().items[0].children[0]);
+  assert.ok(vscode.window.visibleTextEditors.some(e => e.document.uri.path === '/stage/Index/feature.ts' && e.document.getText().includes('first = 100;')), 'staged diff shows index bytes');
+  await app.open(app.getState().items[0].children[1]);
+  assert.ok(vscode.window.visibleTextEditors.some(e => e.document.uri.path === '/work/Working-tree/feature.ts' && e.document.getText().includes('first = 1000;')), 'unstaged diff shows working bytes');
+  await app.toggle(app.getState().items[0].children[0], true);
+  assert.equal(app.getState().items[0].children[0].checkboxState, vscode.TreeItemCheckboxState.Checked);
+  git('commit', '-qm', 'commit staged version');
+  const committed = git('rev-parse', 'HEAD');
+  await loadScope({ comparisons: [{ id: 'history', kind: 'revisions', base: baseCommit, head: committed }] });
+  await app.open(app.getState().items[0].children[0]);
+  assert.ok(vscode.window.visibleTextEditors.some(e => e.document.uri.path === `/history/${committed.slice(0, 8)}/feature.ts` && e.document.getText().includes('first = 100;')), 'committed review ignores unrelated dirty worktree bytes');
+
+  await app.installSkill();
+  for (const folder of ['.agents', '.claude']) {
+    assert.ok((await fs.readFile(path.join(root, folder, 'skills/agr/SKILL.md'), 'utf8')).includes('name: agr'));
+    await fs.access(path.join(root, folder, 'skills/agr/scripts/agr.cjs'));
+  }
+  console.log('PASS: native diffs, immediate saved progress, navigation, invalidation, ranges, safe wrapped comments, staged/unstaged/commit scopes, and both skill installations.');
+};

@@ -1,0 +1,93 @@
+# AGR — Agent-Guided Reviews
+
+**Review changes in the order that explains them.**
+
+Agents can write a feature across dozens of files. An alphabetical file list makes you reconstruct the story yourself. AGR gives you an ordered walkthrough: small review steps, native VS Code diffs, short notes, and progress you can save.
+
+Claude Code or Codex writes `agr.json` in your repository using the included skill. The extension turns that file into a review sidebar. One file can appear in several sections, with each step focusing on a different part of its diff.
+
+```text
+Authentication update
+  Contracts
+    ✓ Define the session shape
+  Behavior
+    ✓ Create a session on sign-in
+    □ Expire a session on sign-out
+  Verification
+    □ Check expiration and retry tests
+  Generated files · optional
+    □ Refresh API types
+```
+
+*Illustrative review structure; the agent chooses the sections and order.*
+
+## Get started
+
+Requires VS Code 1.95+, Git, Node.js 22+ for the skill helper, and Claude Code or Codex to generate a guide.
+
+1. Install the AGR VSIX using **Extensions → … → Install from VSIX…**. To build a VSIX from source, see [Development](#development). Marketplace publication is being prepared.
+2. Open the Git repository you want to review in a trusted VS Code workspace.
+3. Run **AGR: Install Agent Skills in Repository** from the Command Palette.
+4. Ask your agent:
+
+   > Use the agr skill to create a guided review of my uncommitted changes. Explain the important decisions and split different concerns in the same file into separate steps.
+
+5. Open **AGR** in the activity bar. Click a step to open its diff and notes, then mark it reviewed. Use the arrows to move between steps.
+
+The install command copies the skill to `.claude/skills/agr/` and `.agents/skills/agr/`. Start a fresh agent session if the skill is not discovered. Existing skill installations are not overwritten; see [updating skills](docs/usage.md#updating-skills).
+
+## Choose what to review
+
+Ask the agent for the scope you need:
+
+| Request | Comparison |
+| --- | --- |
+| “Review my uncommitted changes.” | HEAD → saved working files, including staged edits |
+| “Review only what I staged.” | HEAD → Git index |
+| “Review my unstaged edits.” | Git index → saved working files |
+| “Create a guide for this PR: …” | PR merge-base → pinned PR tip |
+| “Review my branch against main.” | Merge-base with main → branch tip |
+| “Review these two commits.” | Chosen base → chosen head |
+| “Review this branch and my local follow-up edits.” | Separate comparisons in one guide |
+
+You can limit the scope to files or directories, or let the agent choose and explain the boundaries. For a PR, the agent retrieves metadata and fetches the required Git objects; AGR opens those versions without switching your working branch. Remote access uses your agent's existing tools and credentials.
+
+## What you get
+
+- Ordered sections and review questions beside native diffs.
+- Separate steps for different parts of the same file, even within one hunk.
+- Saved review progress; changed code or notes invalidate the affected approval.
+- Visible **Unguided changes** for changes within the declared scope that the guide has not covered.
+- A portable JSON guide and schema, with no AGR account or model API key.
+
+AGR itself makes no network requests and collects no telemetry. Guide generation runs through your chosen agent under its own settings. See [usage and troubleshooting](docs/usage.md) and [scope, coverage, and progress behavior](docs/review-model.md).
+
+## Development
+
+```sh
+npm ci
+npm run check
+npm run test:extension
+npm run package
+code --install-extension extension/agr-0.3.0.vsix
+```
+
+For development, use Node.js 22.14+ within the 22.x line, or 24.10+. `.nvmrc` selects Node 22. `npm run package` rebuilds the extension and bundled skill before producing the VSIX. Integration tests open an isolated VS Code window with a disposable repository; Linux needs a display or `xvfb-run -a npm run test:extension`.
+
+```text
+extension/       VS Code extension, Marketplace README, icon, integration tests
+skills/agr/      Portable Claude Code / Codex skill, schema, bundled helper
+packages/core/   Git comparisons, guide model, CLI source, unit tests
+scripts/         Build tooling
+docs/            Usage, behavior, and publishing instructions
+```
+
+The standalone skill is available in [skills/agr](skills/agr). Its helper and schema are checked in so copying that folder works without installing this monorepo's dependencies. Edit the source in `packages/core/` and rebuild to update them.
+
+CI checks pull requests and packages a VSIX. After checks pass on `main`, semantic-release uses Conventional Commits to publish versioned releases to GitHub and the Marketplace once credentials are configured.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), [release preparation](docs/publishing.md), and the [changelog](extension/CHANGELOG.md).
+
+## License
+
+[MIT](LICENSE) © Dmitry Zaets.

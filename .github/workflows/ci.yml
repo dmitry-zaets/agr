@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Check Conventional Commit PR title
+        if: github.event_name == 'pull_request'
+        run: node scripts/check-pr-title.mjs
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+      - run: npm ci
+      - run: npm run check
+      - name: Verify portable skill is up to date
+        run: git diff --exit-code -- skills/agr/scripts/agr.cjs skills/agr/guide.schema.json
+      - name: Test VS Code integration
+        run: xvfb-run -a npm run test:extension
+      - run: npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agr-vsix
+          path: extension/agr-*.vsix
+          if-no-files-found: error
+
+  release:
+    needs: verify
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.RELEASE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: agr-release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Verify Marketplace credential is configured
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "Configure the VSCE_PAT repository secret before enabling releases."
+            exit 1
+          fi
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      - name: Release to Marketplace and GitHub
+        run: npm run release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      - name: Preserve prepared package if publishing fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agr-release-recovery
+          path: agr.vsix
+          if-no-files-found: ignore
