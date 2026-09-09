@@ -154,6 +154,47 @@ var init_model = __esm({
   }
 });
 
+// packages/core/src/reviews.ts
+async function reviewPath(root, file) {
+  if (import_node_path.default.basename(file) !== file || !file.endsWith(".json") || file.startsWith(".")) throw new Error("Choose a JSON review directly inside .agr/.");
+  const directory = import_node_path.default.join(root, ".agr");
+  const stat = await (0, import_promises.lstat)(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(".agr must be a directory inside the repository, not a symbolic link.");
+  const target = import_node_path.default.join(directory, file);
+  const entry = await (0, import_promises.lstat)(target);
+  if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("Review files must be regular files, not symbolic links.");
+  return target;
+}
+async function listReviews(root) {
+  let entries;
+  try {
+    const directory = import_node_path.default.join(root, ".agr");
+    const stat = await (0, import_promises.lstat)(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(".agr must be a regular directory.");
+    entries = await (0, import_promises.readdir)(directory);
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+  return Promise.all(entries.filter((file) => file.endsWith(".json") && !file.startsWith(".")).sort().map(async (file) => {
+    try {
+      return { file, guide: parseGuide(await (0, import_promises.readFile)(await reviewPath(root, file), "utf8")) };
+    } catch (error) {
+      return { file, error: error.message };
+    }
+  }));
+}
+var import_node_path, import_promises, isReviewArtifact;
+var init_reviews = __esm({
+  "packages/core/src/reviews.ts"() {
+    "use strict";
+    import_node_path = __toESM(require("node:path"));
+    import_promises = require("node:fs/promises");
+    init_model();
+    isReviewArtifact = (file) => file === ".agr" || file.startsWith(".agr/");
+  }
+});
+
 // packages/core/src/git.ts
 var git_exports = {};
 __export(git_exports, {
@@ -179,8 +220,8 @@ async function git(root, args) {
 async function repositoryRoot(cwd) {
   const canonical = (await git(cwd, ["rev-parse", "--show-toplevel"])).trim();
   const relative = (await git(cwd, ["rev-parse", "--show-cdup"])).trim();
-  const logical = import_node_path.default.resolve(cwd, relative);
-  return await (0, import_promises.realpath)(logical) === await (0, import_promises.realpath)(canonical) ? logical : canonical;
+  const logical = import_node_path2.default.resolve(cwd, relative);
+  return await (0, import_promises2.realpath)(logical) === await (0, import_promises2.realpath)(canonical) ? logical : canonical;
 }
 async function head(root) {
   try {
@@ -191,18 +232,18 @@ async function head(root) {
   }
 }
 async function safePath(root, file) {
-  if (!file || import_node_path.default.isAbsolute(file) || file.split(/[\\/]/).includes("..") || file.includes("\0")) throw new Error("Unsafe repository path.");
-  const absolute = import_node_path.default.resolve(root, file);
-  let parent = import_node_path.default.dirname(absolute);
+  if (!file || import_node_path2.default.isAbsolute(file) || file.split(/[\\/]/).includes("..") || file.includes("\0")) throw new Error("Unsafe repository path.");
+  const absolute = import_node_path2.default.resolve(root, file);
+  let parent = import_node_path2.default.dirname(absolute);
   while (true) {
     try {
-      const actual = await (0, import_promises.realpath)(parent);
-      const canonical = await (0, import_promises.realpath)(root);
-      if (actual !== canonical && !actual.startsWith(canonical + import_node_path.default.sep)) throw new Error("Path leaves the repository.");
+      const actual = await (0, import_promises2.realpath)(parent);
+      const canonical = await (0, import_promises2.realpath)(root);
+      if (actual !== canonical && !actual.startsWith(canonical + import_node_path2.default.sep)) throw new Error("Path leaves the repository.");
       break;
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
-      parent = import_node_path.default.dirname(parent);
+      parent = import_node_path2.default.dirname(parent);
     }
   }
   return absolute;
@@ -210,11 +251,11 @@ async function safePath(root, file) {
 async function workingContent(root, file) {
   const absolute = await safePath(root, file);
   try {
-    const stat = await (0, import_promises.lstat)(absolute);
-    if (stat.isSymbolicLink()) return Buffer.from(await (0, import_promises.readlink)(absolute));
+    const stat = await (0, import_promises2.lstat)(absolute);
+    if (stat.isSymbolicLink()) return Buffer.from(await (0, import_promises2.readlink)(absolute));
     if (!stat.isFile()) return Buffer.from("[Directory or submodule]");
     if (stat.size > 8 * 1024 * 1024) throw new Error(`${file} exceeds the 8 MB per-file limit.`);
-    return await (0, import_promises.readFile)(absolute);
+    return await (0, import_promises2.readFile)(absolute);
   } catch (error) {
     if (error.code === "ENOENT") return Buffer.alloc(0);
     throw error;
@@ -270,13 +311,13 @@ async function snapshotRepository(cwd, selectedFiles) {
   const untracked = await git(root, ["ls-files", "--others", "--exclude-standard", "-z"]);
   const unmerged = await git(root, ["ls-files", "--unmerged", "-z"]);
   if (unmerged) throw new Error("Resolve merge conflicts before generating a review guide.");
-  const files = [...new Set((tracked + untracked).split("\0").filter(Boolean))].filter((f) => !["agr.json", "agr.snapshot.json", "agr.scope.json"].includes(f)).filter((f) => !selectedFiles || selectedFiles.includes(f)).sort();
+  const files = [...new Set((tracked + untracked).split("\0").filter(Boolean))].filter((f) => !isReviewArtifact(f)).filter((f) => !selectedFiles || selectedFiles.includes(f)).sort();
   const changes = [];
   for (const file of files) {
     const bytes = await workingContent(root, file);
     const entry = base ? await git(root, ["ls-tree", "-z", base, "--", file]) : "";
     if (!entry) {
-      const stat = await (0, import_promises.lstat)(await safePath(root, file));
+      const stat = await (0, import_promises2.lstat)(await safePath(root, file));
       const mode = stat.isSymbolicLink() ? "120000" : stat.mode & 73 ? "100755" : "100644";
       const binary = bytes.includes(0);
       const content = bytes.toString("utf8");
@@ -321,34 +362,35 @@ content-sha256:${hash(bytes.toString("base64"))}` : isNew ? text.split("\n").map
   if (await head(root) !== base) throw new Error("HEAD changed during the scan. Refresh and try again.");
   return { version: 1, root, base, comparison: "head-to-working-tree", changes: identifyChanges(changes) };
 }
-var import_node_child_process, import_node_util, import_promises, import_node_path, exec;
+var import_node_child_process, import_node_util, import_promises2, import_node_path2, exec;
 var init_git = __esm({
   "packages/core/src/git.ts"() {
     "use strict";
+    init_reviews();
     import_node_child_process = require("node:child_process");
     import_node_util = require("node:util");
-    import_promises = require("node:fs/promises");
-    import_node_path = __toESM(require("node:path"));
+    import_promises2 = require("node:fs/promises");
+    import_node_path2 = __toESM(require("node:path"));
     init_model();
     exec = (0, import_node_util.promisify)(import_node_child_process.execFile);
   }
 });
 
 // packages/core/src/cli.ts
-var import_promises3 = require("node:fs/promises");
-var import_node_path2 = __toESM(require("node:path"));
+var import_promises4 = require("node:fs/promises");
+var import_node_path3 = __toESM(require("node:path"));
 init_git();
 init_model();
 
 // packages/core/src/scope.ts
+init_reviews();
 var import_node_child_process2 = require("node:child_process");
 var import_node_util2 = require("node:util");
-var import_promises2 = require("node:fs/promises");
+var import_promises3 = require("node:fs/promises");
 init_model();
 init_git();
 var exec2 = (0, import_node_util2.promisify)(import_node_child_process2.execFile);
 var diffFlags = ["--no-ext-diff", "--no-textconv", "--no-renames", "--no-color"];
-var artifacts = /* @__PURE__ */ new Set(["agr.json", "agr.snapshot.json", "agr.scope.json"]);
 async function revision(root, ref) {
   return (await git(root, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).trim();
 }
@@ -416,7 +458,7 @@ async function snapshotScope(cwd, input, selectedFiles) {
     const emptyBase = ["working-tree", "staged"].includes(c.kind) && c.base === null;
     const names = await git(root, emptyBase ? ["ls-files", "-z"] : ["diff", ...diffFlags, ...diffArgs(c), "--name-only", "-z", "--"]);
     const untracked = c.includeUntracked ? (await git(root, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean) : [];
-    const files = [.../* @__PURE__ */ new Set([...names.split("\0").filter(Boolean), ...untracked])].filter((file) => !artifacts.has(file)).filter((file) => !selectedFiles || selectedFiles.includes(file)).filter((file) => !c.paths || c.paths.some((p) => p === "." || file === p || file.startsWith(p + "/"))).sort();
+    const files = [.../* @__PURE__ */ new Set([...names.split("\0").filter(Boolean), ...untracked])].filter((file) => !isReviewArtifact(file)).filter((file) => !selectedFiles || selectedFiles.includes(file)).filter((file) => !c.paths || c.paths.some((p) => p === "." || file === p || file.startsWith(p + "/"))).sort();
     const parts = [];
     for (const file of files) {
       const newWorkingFile = c.kind === "working-tree" && c.base && !await git(root, ["ls-tree", "-z", c.base, "--", file]);
@@ -430,7 +472,7 @@ async function snapshotScope(cwd, input, selectedFiles) {
         } else {
           let stat;
           try {
-            stat = await (0, import_promises2.lstat)(await safePath(root, file));
+            stat = await (0, import_promises3.lstat)(await safePath(root, file));
           } catch (error) {
             if (error.code === "ENOENT") continue;
             throw error;
@@ -484,6 +526,7 @@ async function snapshotForGuide(root, guide, files) {
 }
 
 // packages/core/src/cli.ts
+init_reviews();
 async function main() {
   const args = process.argv.slice(2);
   const scopeFlag = args.indexOf("--scope");
@@ -494,21 +537,35 @@ async function main() {
     args.splice(scopeFlag, 2);
   }
   const [command, directory = ".", output] = args;
-  if (!["snapshot", "validate"].includes(command)) throw new Error("Usage: node agr.cjs snapshot <repo> [output.json] | validate <repo> [guide.json]");
+  if (!["snapshot", "validate"].includes(command)) throw new Error("Usage: node agr.cjs snapshot <repo> [output.json] | validate <repo> [review-name.json]");
   if (command === "snapshot") {
-    const snapshot = scopeFile ? await snapshotScope(import_node_path2.default.resolve(directory), JSON.parse(await (0, import_promises3.readFile)(import_node_path2.default.resolve(scopeFile), "utf8"))) : await snapshotRepository(import_node_path2.default.resolve(directory));
+    const snapshot = scopeFile ? await snapshotScope(import_node_path3.default.resolve(directory), JSON.parse(await (0, import_promises4.readFile)(import_node_path3.default.resolve(scopeFile), "utf8"))) : await snapshotRepository(import_node_path3.default.resolve(directory));
     const text = JSON.stringify(snapshot, null, 2) + "\n";
-    if (output) await (0, import_promises3.writeFile)(import_node_path2.default.resolve(output), text, { flag: "w" });
+    if (output) await (0, import_promises4.writeFile)(import_node_path3.default.resolve(output), text, { flag: "w" });
     else process.stdout.write(text);
   } else {
     if (scopeFile) throw new Error("validate reads scope from the guide; do not pass --scope.");
     const { repositoryRoot: repositoryRoot2 } = await Promise.resolve().then(() => (init_git(), git_exports));
-    const root = await repositoryRoot2(import_node_path2.default.resolve(directory));
-    const guide = parseGuide(await (0, import_promises3.readFile)(output ? import_node_path2.default.resolve(output) : import_node_path2.default.join(root, "agr.json"), "utf8"));
-    const snapshot = await snapshotForGuide(root, guide);
-    const result = validateCoverage(guide, snapshot);
-    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
-    if (!result.baseMatches || result.missing.length || result.unknown.length || result.invalidSelections.length) process.exitCode = 1;
+    const root = await repositoryRoot2(import_node_path3.default.resolve(directory));
+    const reviews = await listReviews(root);
+    const file = output && (output.startsWith(".agr/") ? output.slice(5) : output);
+    if (file && (import_node_path3.default.basename(file) !== file || !file.endsWith(".json"))) throw new Error("Pass a review filename inside .agr/, such as checkout.json.");
+    const selected = file ? reviews.filter((review) => review.file === file) : reviews;
+    if (!selected.length) throw new Error(file ? `Review .agr/${file} not found.` : "No reviews found. Create .agr/<name>.json first.");
+    const results = [];
+    for (const review of selected) {
+      try {
+        if (!review.guide) throw new Error(review.error);
+        const snapshot = await snapshotForGuide(root, review.guide);
+        const result = validateCoverage(review.guide, snapshot);
+        results.push({ file: `.agr/${review.file}`, ...result });
+        if (!result.baseMatches || result.missing.length || result.unknown.length || result.invalidSelections.length) process.exitCode = 1;
+      } catch (error) {
+        results.push({ file: `.agr/${review.file}`, error: error.message });
+        process.exitCode = 1;
+      }
+    }
+    process.stdout.write(JSON.stringify({ reviews: results }, null, 2) + "\n");
   }
 }
 main().catch((error) => {

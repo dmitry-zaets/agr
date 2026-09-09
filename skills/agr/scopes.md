@@ -1,15 +1,15 @@
 # Choosing the review scope
 
-The same skill writes the same repository-root `agr.json` for every case. These are **comparison recipes**, not final guides. Save a recipe in a temporary JSON file, run:
+The same skill writes a named review in the repository-root folder `.agr/<name>.json` for every case. These are **comparison recipes**, not final guides. Save a recipe under `.agr/.cache/` or in a temporary JSON file, run:
 
 ```sh
-node <skill-directory>/scripts/agr.cjs snapshot <repository> <repository>/agr.snapshot.json --scope <recipe.json>
+node <skill-directory>/scripts/agr.cjs snapshot <repository> <repository>/.agr/.cache/<name>.snapshot.json --scope <recipe.json>
 ```
 
 Copy the returned `comparison`, `base`, and resolved `scope` into the guide. `base` is an opaque scope fingerprint in this format. Copy the change IDs unchanged. Validation automatically uses the scope saved in the guide:
 
 ```sh
-node <skill-directory>/scripts/agr.cjs validate <repository>
+node <skill-directory>/scripts/agr.cjs validate <repository> <name>.json
 ```
 
 ## Decision rules
@@ -80,4 +80,4 @@ Paths are literal repository-relative files or directory prefixes, not globs. Om
 
 ## Refreshing
 
-Revision endpoints returned by the helper are pinned hashes: the review remains reproducible even if the local checkout changes. PR/branch reviews do not poll remotes. To refresh a PR or moving branch, fetch again and create a new snapshot from the current source refs, not the old pinned recipe. Working-tree and index sides remain live, so edits can make their steps stale. Default local comparisons also carry `baseRef: "HEAD"`; preserve it so committing or switching HEAD invalidates the old review instead of presenting committed work as still staged. A changed scope fingerprint conservatively invalidates prior approval. Existing legacy guides remain supported.
+Revision endpoints returned by the helper are pinned hashes: the review remains reproducible even if the local checkout changes. PR/branch reviews do not poll remotes. To refresh a PR or moving branch, fetch again and create a new snapshot from the current source refs, not the old pinned recipe. Working-tree and index sides remain live, so edits can make their steps stale. Default local comparisons also carry `baseRef: "HEAD"`; preserve it so committing or switching HEAD invalidates the old review instead of presenting committed work as still staged. A changed scope fingerprint conservatively invalidates prior approval. Store each guide inside `.agr/`; root `agr.json` is not read.

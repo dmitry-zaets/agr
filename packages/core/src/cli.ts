@@ -2,8 +2,9 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { snapshotRepository } from './git';
-import { parseGuide, validateCoverage } from './model';
+import { validateCoverage } from './model';
 import { snapshotForGuide, snapshotScope } from './scope';
+import { listReviews } from './reviews';
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -15,7 +16,7 @@ async function main(): Promise<void> {
     args.splice(scopeFlag, 2);
   }
   const [command, directory = '.', output] = args;
-  if (!['snapshot', 'validate'].includes(command)) throw new Error('Usage: node agr.cjs snapshot <repo> [output.json] | validate <repo> [guide.json]');
+  if (!['snapshot', 'validate'].includes(command)) throw new Error('Usage: node agr.cjs snapshot <repo> [output.json] | validate <repo> [review-name.json]');
   if (command === 'snapshot') {
     const snapshot = scopeFile
       ? await snapshotScope(path.resolve(directory), JSON.parse(await readFile(path.resolve(scopeFile), 'utf8')))
@@ -27,11 +28,25 @@ async function main(): Promise<void> {
     if (scopeFile) throw new Error('validate reads scope from the guide; do not pass --scope.');
     const { repositoryRoot } = await import('./git');
     const root = await repositoryRoot(path.resolve(directory));
-    const guide = parseGuide(await readFile(output ? path.resolve(output) : path.join(root, 'agr.json'), 'utf8'));
-    const snapshot = await snapshotForGuide(root, guide);
-    const result = validateCoverage(guide, snapshot);
-    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
-    if (!result.baseMatches || result.missing.length || result.unknown.length || result.invalidSelections.length) process.exitCode = 1;
+    const reviews = await listReviews(root);
+    const file = output && (output.startsWith('.agr/') ? output.slice(5) : output);
+    if (file && (path.basename(file) !== file || !file.endsWith('.json'))) throw new Error('Pass a review filename inside .agr/, such as checkout.json.');
+    const selected = file ? reviews.filter(review => review.file === file) : reviews;
+    if (!selected.length) throw new Error(file ? `Review .agr/${file} not found.` : 'No reviews found. Create .agr/<name>.json first.');
+    const results = [];
+    for (const review of selected) {
+      try {
+        if (!review.guide) throw new Error(review.error);
+        const snapshot = await snapshotForGuide(root, review.guide);
+        const result = validateCoverage(review.guide, snapshot);
+        results.push({ file: `.agr/${review.file}`, ...result });
+        if (!result.baseMatches || result.missing.length || result.unknown.length || result.invalidSelections.length) process.exitCode = 1;
+      } catch (error) {
+        results.push({ file: `.agr/${review.file}`, error: (error as Error).message });
+        process.exitCode = 1;
+      }
+    }
+    process.stdout.write(JSON.stringify({ reviews: results }, null, 2) + '\n');
   }
 }
 main().catch(error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1; });

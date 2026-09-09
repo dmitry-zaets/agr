@@ -26,18 +26,18 @@ exports.run = async function () {
   assert.equal(app.getTreeItem(step).description, 'Saving review…', 'feedback appears before disk validation completes');
   assert.equal(app.getTreeItem(step).checkboxState, vscode.TreeItemCheckboxState.Checked);
   await saving;
-  let guide = JSON.parse(await fs.readFile(path.join(root, 'agr.json'), 'utf8'));
+  let guide = JSON.parse(await fs.readFile(path.join(root, '.agr', 'fixture.json'), 'utf8'));
   assert.equal(guide.groups[0].steps[0].review.status, 'reviewed', 'progress saved to guide');
   assert.ok(guide.groups[0].steps[0].review.fingerprint);
   assert.equal(app.getState().items[0].children[0].checkboxState, vscode.TreeItemCheckboxState.Checked);
   assert.notEqual(app.getTreeItem(app.getState().items[0].children[0]).description, 'Saving review…');
   await Promise.all([app.toggle(step, false), app.toggle(step, true)]);
-  guide = JSON.parse(await fs.readFile(path.join(root, 'agr.json'), 'utf8'));
+  guide = JSON.parse(await fs.readFile(path.join(root, '.agr', 'fixture.json'), 'utf8'));
   assert.equal(guide.groups[0].steps[0].review.status, 'reviewed', 'rapid toggles preserve the last requested state');
 
   await app.navigate(1);
   await app.toggle(undefined, true);
-  guide = JSON.parse(await fs.readFile(path.join(root, 'agr.json'), 'utf8'));
+  guide = JSON.parse(await fs.readFile(path.join(root, '.agr', 'fixture.json'), 'utf8'));
   assert.equal(guide.groups[1].steps[0].review.status, 'reviewed', 'next navigates within same file to second concern');
   await fs.writeFile(path.join(root, 'feature.ts'), 'export const first = 100;\n\nexport const middle = 2;\n\nexport const last = 30;\n');
   await app.refresh();
@@ -55,7 +55,7 @@ exports.run = async function () {
     { id: 'new-first', title: 'First half', note: 'Read the beginning.', changes: [added.id], selections: { [added.id]: { modified: { start: 1, end: 2 } } } },
     { id: 'new-last', title: 'Second half', note: 'Read the ending.', changes: [added.id], selections: { [added.id]: { modified: { start: 3, end: 4 } } } }
   ] });
-  const document = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(root, 'agr.json')));
+  const document = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(root, '.agr', 'fixture.json')));
   const edit = new vscode.WorkspaceEdit();
   edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), JSON.stringify(guide, null, 2));
   await vscode.workspace.applyEdit(edit); await document.save();
@@ -75,12 +75,12 @@ exports.run = async function () {
   git('add', 'feature.ts');
   await fs.writeFile(path.join(root, 'feature.ts'), 'export const first = 1000;\n\nexport const middle = 2;\n\nexport const last = 30;\n');
   async function loadScope(scope) {
-    const recipe = path.join(root, 'agr.scope.json');
+    const recipe = path.join(root, '.agr', '.cache', 'scope.json');
     await fs.writeFile(recipe, JSON.stringify(scope));
     const snapshot = JSON.parse(execFileSync('node', [helper, 'snapshot', root, '--scope', recipe], { encoding: 'utf8' }));
     const scopedGuide = { version: 1, title: 'Scoped review', comparison: snapshot.comparison, base: snapshot.base, scope: snapshot.scope,
       groups: [{ id: 'scoped', title: 'Stages', steps: scope.comparisons.map(c => ({ id: c.id, title: c.id, note: 'Review this version.', changes: snapshot.changes.filter(change => change.comparisonId === c.id).map(change => change.id) })) }] };
-    await vscode.workspace.fs.writeFile(vscode.Uri.file(path.join(root, 'agr.json')), Buffer.from(JSON.stringify(scopedGuide)));
+    await vscode.workspace.fs.writeFile(vscode.Uri.file(path.join(root, '.agr', 'fixture.json')), Buffer.from(JSON.stringify(scopedGuide)));
     await app.refresh();
     assert.equal(app.getState().guide.comparison, 'scoped');
     assert.equal(app.getState().items.length, 1, 'scoped coverage excludes unrelated local files');
@@ -98,10 +98,58 @@ exports.run = async function () {
   await app.open(app.getState().items[0].children[0]);
   assert.ok(vscode.window.visibleTextEditors.some(e => e.document.uri.path === `/history/${committed.slice(0, 8)}/feature.ts` && e.document.getText().includes('first = 100;')), 'committed review ignores unrelated dirty worktree bytes');
 
+  // Two guides deliberately share step IDs: identity and writes must stay isolated.
+  const firstFile = path.join(root, '.agr', 'fixture.json');
+  const firstBefore = await fs.readFile(firstFile, 'utf8');
+  const alternate = JSON.parse(firstBefore);
+  alternate.title = 'Second review';
+  for (const group of alternate.groups) for (const entry of group.steps) entry.review = { status: 'pending' };
+  const secondFile = path.join(root, '.agr', 'second.json');
+  await fs.writeFile(secondFile, JSON.stringify(alternate));
+  await fs.writeFile(path.join(root, 'agr.json'), '{"not":"a supported guide"}');
+  await app.refresh();
+  assert.deepEqual(app.getState().reviews.map(review => review.file), ['fixture.json', 'second.json']);
+  const oldItem = app.getState().items[0].children[0];
+  await app.selectReview('second.json');
+  assert.equal(app.getState().reviewFile, 'second.json');
+  assert.equal(app.getState().items[0].children[0].checkboxState, vscode.TreeItemCheckboxState.Unchecked);
+  await assert.rejects(app.toggle(oldItem, true), /active review changed/);
+  await assert.rejects(app.open(oldItem), /active review changed/);
+  await app.open(app.getState().items[0].children[0]);
+  const savingSecond = app.toggle(app.getState().items[0].children[0], true);
+  const switching = app.selectReview('fixture.json');
+  await Promise.all([savingSecond, switching]);
+  assert.equal(await fs.readFile(firstFile, 'utf8'), firstBefore, 'switching never writes progress to another guide');
+  assert.equal(JSON.parse(await fs.readFile(secondFile, 'utf8')).groups[0].steps[0].review.status, 'reviewed');
+  await app.selectReview('second.json'); await app.refresh();
+  assert.equal(app.getState().reviewFile, 'second.json', 'refresh keeps the selected review');
+  assert.equal(app.getState().items[0].children[0].checkboxState, vscode.TreeItemCheckboxState.Checked);
+
+  const badFile = path.join(root, '.agr', 'broken.json');
+  await fs.writeFile(badFile, '{'); await app.refresh();
+  await app.selectReview('broken.json');
+  assert.equal(app.getState().snapshot, undefined, 'invalid guides never reuse another guide snapshot');
+  assert.match(app.view.message, /Guide error/);
+  await app.selectReview('second.json');
+  assert.ok(app.getState().snapshot, 'an invalid guide does not block another review');
+  const unavailable = structuredClone(alternate);
+  unavailable.scope.comparisons[0].head = 'a'.repeat(40);
+  await fs.writeFile(path.join(root, '.agr', 'missing-commits.json'), JSON.stringify(unavailable));
+  await app.refresh(); await app.selectReview('missing-commits.json');
+  assert.equal(app.getState().snapshot, undefined);
+  assert.equal(app.getState().guide.title, 'Second review', 'notes remain accessible when commits are missing');
+  assert.ok(app.getState().items[0].children[0].tooltip.value);
+  assert.equal(app.getState().items[0].children[0].command, undefined, 'unavailable steps cannot be opened or approved');
+  await app.selectReview('second.json');
+  await fs.unlink(secondFile); await fs.unlink(badFile);
+  await fs.unlink(path.join(root, '.agr', 'missing-commits.json'));
+  await app.refresh();
+  assert.equal(app.getState().reviewFile, 'fixture.json', 'deleting a selected guide chooses the remaining review');
+
   await app.installSkill();
   for (const folder of ['.agents', '.claude']) {
     assert.ok((await fs.readFile(path.join(root, folder, 'skills/agr/SKILL.md'), 'utf8')).includes('name: agr'));
     await fs.access(path.join(root, folder, 'skills/agr/scripts/agr.cjs'));
   }
-  console.log('PASS: native diffs, immediate saved progress, navigation, invalidation, ranges, safe wrapped comments, staged/unstaged/commit scopes, and both skill installations.');
+  console.log('PASS: multiple review isolation, switching, invalid and unavailable reviews, native diffs, immediate saved progress, navigation, invalidation, ranges, safe wrapped comments, staged/unstaged/commit scopes, and both skill installations.');
 };

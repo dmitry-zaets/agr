@@ -4,7 +4,7 @@
 
 Agents can write a feature across dozens of files. An alphabetical file list makes you reconstruct the story yourself. AGR gives you an ordered walkthrough: small review steps, native VS Code diffs, short notes, and progress you can save.
 
-Claude Code or Codex writes `agr.json` in your repository using the included skill. The extension turns that file into a review sidebar. One file can appear in several sections, with each step focusing on a different part of its diff.
+Claude Code or Codex writes `.agr/<name>.json` in your repository using the included skill. The extension turns each file into a review you can select in the sidebar. One file can appear in several sections, with each step focusing on a different part of its diff.
 
 ![AGR reviewing its own code: ordered steps in the sidebar, a focused native diff, and an inline review question.](docs/assets/agr-demo.jpg)
 
@@ -21,7 +21,7 @@ Requires VS Code 1.95+, Git, Node.js 22+ for the skill helper, and Claude Code o
 
    > Use the agr skill to create a guided review of my uncommitted changes. Explain the important decisions and split different concerns in the same file into separate steps.
 
-5. Open **AGR** in the activity bar. Click a step to open its diff and notes, then mark it reviewed. Use the arrows to move between steps.
+5. Open **AGR** in the activity bar. Use **Switch Review** to choose a guide. Click a step to open its diff and notes, then mark it reviewed. Use the arrows to move between steps.
 
 The install command copies the skill to `.claude/skills/agr/` and `.agents/skills/agr/`. Start a fresh agent session if the skill is not discovered. Existing skill installations are not overwritten; see [updating skills](docs/usage.md#updating-skills).
 
@@ -45,11 +45,20 @@ You can limit the scope to files or directories, or let the agent choose and exp
 
 - Ordered sections and review questions beside native diffs.
 - Separate steps for different parts of the same file, even within one hunk.
+- Multiple named reviews in `.agr/`, with a sidebar picker and independent progress.
 - Saved review progress; changed code or notes invalidate the affected approval.
 - Visible **Unguided changes** for changes within the declared scope that the guide has not covered.
 - A portable JSON guide and schema, with no AGR account or model API key.
 
 AGR itself makes no network requests and collects no telemetry. Guide generation runs through your chosen agent under its own settings. See [usage and troubleshooting](docs/usage.md) and [scope, coverage, and progress behavior](docs/review-model.md).
+
+## Review files in 1.1
+
+Store guides directly in `.agr/`, for example `.agr/checkout-flow.json` and `.agr/pr-142.json`. Use **AGR: Switch Review** to see their scopes, progress, and stale or unavailable status. The last selected review is remembered per repository.
+
+Root `agr.json` is no longer read. To reuse a 1.0 guide, move it to `.agr/<name>.json` and update the agent skill. The guide’s JSON structure is unchanged.
+
+Pinned commit reviews remain readable while their Git objects exist locally. Local reviews can become stale as files, the index, or HEAD change. Stale notes remain visible; regenerate the affected guide to review the current code. AGR does not archive old working-file contents.
 
 ## Development
 
@@ -58,7 +67,7 @@ npm ci
 npm run check
 npm run test:extension
 npm run package
-code --install-extension extension/agr-0.3.0.vsix
+code --install-extension extension/agr-1.1.0.vsix
 ```
 
 For development, use Node.js 22.14+ within the 22.x line, or 24.10+. `.nvmrc` selects Node 22. `npm run package` rebuilds the extension and bundled skill before producing the VSIX. Integration tests open an isolated VS Code window with a disposable repository; Linux needs a display or `xvfb-run -a npm run test:extension`.

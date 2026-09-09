@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm, rename, chmod, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, rename, chmod, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { git, snapshotRepository, safePath } from '../src/git';
@@ -88,8 +88,9 @@ test('deleted files and renames remain accounted for', async t => {
 
 test('guide artifacts do not become their own review changes', async t => {
   const root = await fixture(t);
-  await writeFile(path.join(root, 'agr.json'), '{}');
-  await writeFile(path.join(root, 'agr.snapshot.json'), '{}');
+  await mkdir(path.join(root, '.agr', '.cache'), { recursive: true });
+  await writeFile(path.join(root, '.agr', 'feature.json'), '{}');
+  await writeFile(path.join(root, '.agr', '.cache', 'snapshot.json'), '{}');
   assert.equal((await snapshotRepository(root)).changes.length, 0);
 });
 

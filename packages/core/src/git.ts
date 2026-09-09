@@ -1,3 +1,4 @@
+import { isReviewArtifact } from './reviews';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { lstat, readFile, readlink, realpath } from 'node:fs/promises';
@@ -102,7 +103,7 @@ export async function snapshotRepository(cwd: string, selectedFiles?: readonly s
   const unmerged = await git(root, ['ls-files', '--unmerged', '-z']);
   if (unmerged) throw new Error('Resolve merge conflicts before generating a review guide.');
   const files = [...new Set((tracked + untracked).split('\0').filter(Boolean))]
-    .filter(f => !['agr.json', 'agr.snapshot.json', 'agr.scope.json'].includes(f))
+    .filter(f => !isReviewArtifact(f))
     .filter(f => !selectedFiles || selectedFiles.includes(f)).sort();
   const changes: Omit<Change, 'id'>[] = [];
   for (const file of files) {

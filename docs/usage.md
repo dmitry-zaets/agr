@@ -2,7 +2,7 @@
 
 ## Guide generation
 
-Run **AGR: Install Agent Skills in Repository**, then ask Claude Code or Codex to use the `agr` skill. The agent must write and validate `<git-root>/agr.json`. A plan in chat or a Markdown file in a scratchpad is not the deliverable.
+Run **AGR: Install Agent Skills in Repository**, then ask Claude Code or Codex to use the `agr` skill. The agent must write and validate `<git-root>/.agr/<name>.json`. A plan in chat or a Markdown file in a scratchpad is not the deliverable.
 
 Examples:
 
@@ -20,7 +20,7 @@ The agent can organize steps around concerns instead of file names. Each step in
 
 Click a sidebar step to open a native diff. Some steps reference multiple files. Notes appear as native comments, with markers on the relevant ranges. Check the step when finished; progress is stored in the guide. **Next Step** and **Previous Step** follow the guide's order.
 
-Use **AGR: Open Guide File** to inspect or edit the JSON. Changing a step's explanation invalidates its previous review. Use **AGR: Select Repository** when several Git roots are open.
+Use **AGR: Switch Review** to choose among `.agr/*.json` files. The picker shows scope, progress, and stale or unavailable status. Selection is remembered per repository. Use **AGR: Open Guide File** to inspect or edit the JSON. Changing a step's explanation invalidates its previous review. Use **AGR: Select Repository** when several Git roots are open.
 
 ## Updating skills
 
@@ -33,21 +33,25 @@ Keep `SKILL.md`, `scopes.md`, `guide.schema.json`, and `scripts/agr.cjs` togethe
 From the target repository, after installing the Claude skill:
 
 ```sh
-node .claude/skills/agr/scripts/agr.cjs validate .
+node .claude/skills/agr/scripts/agr.cjs validate . checkout-flow.json
 ```
 
-For the Codex installation, substitute `.agents` for `.claude`. Validation follows the guide's declared scope and reports missing hunks, uncovered changes, invalid ranges, and baseline mismatches. See [scope recipes](../skills/agr/scopes.md) for explicit PR, branch, and mixed comparisons.
+Omit the filename to validate all reviews; any invalid, unavailable, or stale guide makes validation fail. For the Codex installation, substitute `.agents` for `.claude`. Validation follows the guide's declared scope and reports missing hunks, uncovered changes, invalid ranges, and baseline mismatches. See [scope recipes](../skills/agr/scopes.md) for explicit PR, branch, and mixed comparisons.
 
 ## Local artifacts
 
-`agr.json` contains the notes and review progress. `agr.snapshot.json` is an optional exported snapshot; `agr.scope.json` is an optional scope recipe. These files are excluded from their own review, but AGR does not add Git ignore rules. If you want them kept local, add their names to `.git/info/exclude` or an appropriate `.gitignore`.
+Store guides directly in `.agr/`, with descriptive filenames such as `checkout-flow.json`. Progress is saved in each guide. Snapshots and recipes belong in `.agr/.cache/`; snapshot exports use the selected review’s name. Only top-level JSON files are offered as reviews.
+
+The entire `.agr/` folder is excluded from its own review, including tracked files. AGR does not add ignore rules. Add `.agr/` to `.git/info/exclude` or `.gitignore` if you want to keep reviews local.
+
+Version 1.1 does not read root `agr.json`. Move an existing guide into `.agr/<name>.json` and update the installed skills. Move old snapshot and scope files into `.agr/.cache/` as well. The guide’s JSON structure and saved approvals are unchanged; the normal freshness checks still apply.
 
 ## Troubleshooting
 
 | Symptom | What to check |
 | --- | --- |
-| No guide appears | Confirm `agr.json` is in the selected Git root. Run **AGR: Refresh**. |
-| Agent only writes a chat message or scratchpad file | Update the skill and ask it to write and validate the actual `agr.json` in the Git root. |
+| No guide appears | Confirm `.agr/<name>.json` is in the selected Git root. Run **AGR: Refresh**. |
+| Agent only writes a chat message or scratchpad file | Update the skill and ask it to write and validate the actual `.agr/<name>.json` in the Git root. |
 | Agent cannot find the skill | Confirm installation and start a fresh agent session. |
 | A step is stale | Its changes, notes, ranges, or baseline no longer match. Regenerate the guide. |
 | Unguided changes appear | Changes inside the chosen scope remain uncovered. Ask the agent to include them or explain a narrower scope. |

@@ -2,6 +2,10 @@
 
 Published release history is available in [GitHub Releases](https://github.com/dmitry-zaets/agr/releases). semantic-release adds the current release notes to this file during packaging. The entries below describe local prototype history.
 
+## Upgrading to 1.1
+
+Reviews now live in `.agr/<name>.json`, with a **Switch Review** picker and independent progress. Root `agr.json` is no longer read. Move existing guides into `.agr/` and update the installed Claude Code/Codex skills. Store snapshots and scope recipes under `.agr/.cache/`. The JSON guide structure is unchanged.
+
 ## 0.3.0
 
 Initial AGR release, following local Review Guide prototypes.

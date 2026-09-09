@@ -2,7 +2,7 @@
   "name": "agr",
   "displayName": "AGR \u2014 Agent-Guided Reviews",
   "description": "Agent-guided reviews of PRs, branches, commits, staged and unstaged changes, with notes and persistent progress.",
-  "version": "0.3.0",
+  "version": "1.1.0",
   "publisher": "dmitry-zaets",
   "license": "MIT",
   "engines": {
@@ -13,7 +13,7 @@
   ],
   "main": "./dist/extension.cjs",
   "activationEvents": [
-    "workspaceContains:agr.json"
+    "workspaceContains:.agr/*.json"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -94,10 +94,21 @@
         "title": "Select Repository",
         "category": "AGR",
         "icon": "$(repo)"
+      },
+      {
+        "command": "agr.selectReview",
+        "title": "Switch Review",
+        "category": "AGR",
+        "icon": "$(list-selection)"
       }
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "agr.selectReview",
+          "when": "view == agr.steps",
+          "group": "navigation@0"
+        },
         {
           "command": "agr.previous",
           "when": "view == agr.steps",
@@ -140,7 +151,7 @@
     ],
     "jsonValidation": [
       {
-        "fileMatch": "**/agr.json",
+        "fileMatch": "**/.agr/*.json",
         "url": "./dist/guide.schema.json"
       }
     ]

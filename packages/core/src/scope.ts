@@ -1,3 +1,4 @@
+import { isReviewArtifact } from './reviews';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { lstat } from 'node:fs/promises';
@@ -6,7 +7,6 @@ import { baseContent, git, head, identifyChanges, parseHunks, repositoryRoot, sa
 
 const exec = promisify(execFile);
 const diffFlags = ['--no-ext-diff', '--no-textconv', '--no-renames', '--no-color'];
-const artifacts = new Set(['agr.json', 'agr.snapshot.json', 'agr.scope.json']);
 
 async function revision(root: string, ref: string): Promise<string> {
   return (await git(root, ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`])).trim();
@@ -82,7 +82,7 @@ export async function snapshotScope(cwd: string, input: Scope, selectedFiles?: r
     const names = await git(root, emptyBase ? ['ls-files', '-z'] : ['diff', ...diffFlags, ...diffArgs(c), '--name-only', '-z', '--']);
     const untracked = c.includeUntracked ? (await git(root, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean) : [];
     const files = [...new Set([...names.split('\0').filter(Boolean), ...untracked])]
-      .filter(file => !artifacts.has(file))
+      .filter(file => !isReviewArtifact(file))
       .filter(file => !selectedFiles || selectedFiles.includes(file))
       .filter(file => !c.paths || c.paths.some(p => p === '.' || file === p || file.startsWith(p + '/'))).sort();
     const parts: Omit<Change, 'id'>[] = [];

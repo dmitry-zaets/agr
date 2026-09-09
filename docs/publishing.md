@@ -13,7 +13,7 @@ AGR uses semantic-release. Conventional Commits on `main` determine the next ver
 
 Use Microsoft's [publisher and authentication instructions](https://code.visualstudio.com/api/working-with-extensions/publishing-extension) to configure the account. This workflow currently uses `VSCE_PAT`; Microsoft documents retirement of global Azure DevOps PATs on December 1, 2026. Before then, migrate the release job to Entra workload identity, add an Azure login step, and use `VSCE_AZURE_CREDENTIAL=true` instead of the PAT. The [VS Code release plugin](https://github.com/felipecrs/semantic-release-vsce) supports both authentication modes.
 
-The first semantic release defaults to **1.0.0** when there is a releasable commit and no previous release tag. `0.3.0` in the source manifest identifies the local prototype build; it does not seed the automated release history. If a version was actually published before enabling automation, its matching release tag must identify that release's commit. Do not fabricate a release tag just to influence version selection.
+The first semantic release defaults to **1.0.0** when there is a releasable commit and no previous release tag. The version in the source manifest identifies the local development build; it does not seed the automated release history. If a version was actually published before enabling automation, its matching release tag must identify that release's commit. Do not fabricate a release tag just to influence version selection.
 
 ## Commit conventions
 

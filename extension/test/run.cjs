@@ -15,7 +15,8 @@ async function main() {
   await writeFile(path.join(root, 'feature.ts'), 'export const first = 10;\n\nexport const middle = 2;\n\nexport const last = 30;\n');
   const helper = path.resolve('skills/agr/scripts/agr.cjs');
   const snapshot = JSON.parse(execFileSync(process.execPath, [helper, 'snapshot', root], { encoding: 'utf8' }));
-  await writeFile(path.join(root, 'agr.json'), JSON.stringify({
+  await require('node:fs/promises').mkdir(path.join(root, '.agr', '.cache'), { recursive: true });
+  await writeFile(path.join(root, '.agr', 'fixture.json'), JSON.stringify({
     version: 1, title: 'Fixture review', comparison: 'head-to-working-tree', base: snapshot.base,
     groups: [{ id: 'first', title: 'First concern', steps: [{ id: 'first-step', title: 'Change first value', note: 'Review the first concern.\nKeep [links](command:untrusted) as text.', focus: 'Check the new value.', changes: [snapshot.changes[0].id] }] },
       { id: 'second', title: 'Second concern', steps: [{ id: 'second-step', title: 'Change last value', note: 'Review the second concern.', changes: [snapshot.changes[1].id] }] }]

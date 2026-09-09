@@ -4,7 +4,7 @@
 
 AGR opens agent-authored review steps in VS Code's native diff editor, with short notes and saved progress. Review a feature in a meaningful order, and revisit different parts of the same file in separate sections.
 
-Your Claude Code or Codex agent creates `agr.json` in the Git repository root. AGR reads that file and displays the walkthrough.
+Your Claude Code or Codex agent creates `.agr/<name>.json` in the Git repository root. Use **AGR: Switch Review** to choose a walkthrough; progress is saved independently for each review.
 
 ## Start a review
 
@@ -32,22 +32,28 @@ Give your agent a PR link, branch name, or description of what you want reviewed
 
 ## Progress that follows the changes
 
-A file can appear in multiple steps, each focused on a specific range. Your notes and review progress are saved in `agr.json`. Changed code, notes, or comparison baselines can require another review. Uncovered changes within the guide's scope appear under **Unguided changes**.
+A file can appear in multiple steps, each focused on a specific range. Your notes and review progress are saved in `.agr/<name>.json`. Changed code, notes, or comparison baselines can require another review. Uncovered changes within the guide's scope appear under **Unguided changes**.
 
 PR and branch reviews pin their commits. Ask the agent to regenerate the guide after remote updates. Default local comparisons follow HEAD. Diffs show saved snapshots; reopen a step to see newer saved edits. Unsaved buffers are excluded. Binary changes are listed for inspection in another viewer.
 
 ## Commands
 
-Search for **AGR** in the Command Palette to install skills, export a change snapshot, refresh the guide, open its JSON file, navigate steps, or select a repository in a multi-root workspace.
+Search for **AGR** in the Command Palette to install skills, export a change snapshot, refresh the guide, open its JSON file, navigate steps, switch reviews, or select a repository in a multi-root workspace.
 
 ## Privacy and local files
 
 AGR makes no network requests, collects no telemetry, and requires no model API key. Your chosen agent handles generation under its own settings and credentials. AGR writes guide progress and, when requested, skill files or an exported snapshot. It does not stage or commit changes.
 
-Guide artifacts are excluded from their own review, but remain ordinary files in Git. Add `agr.json`, `agr.snapshot.json`, and `agr.scope.json` to your Git ignore configuration if you want to keep them local.
+Guide artifacts are excluded from their own review, but remain ordinary files in Git. Add `.agr/` to your Git ignore configuration if you want to keep them local.
+
+## Version 1.1 layout
+
+Use named files such as `.agr/checkout-flow.json` and `.agr/pr-142.json`. The picker shows scope, progress, and stale or unavailable status. Root `agr.json` is no longer read: move existing guides into `.agr/` and update the agent skill.
+
+Local reviews can become stale after edits or commits. Their notes remain accessible, but old local file contents are not archived. Pinned reviews remain usable while their Git objects are available; fetch missing commits when needed.
 
 ## Help
 
-If no review appears, check that the guide is named exactly `agr.json` in the selected Git repository root. Use **AGR: Refresh** after generating it. For stale steps, regenerate the guide against the latest changes.
+If no review appears, check that the guide is saved directly inside `.agr/` in the selected Git repository root. Use **AGR: Refresh** after generating it. For stale steps, regenerate the guide against the latest changes.
 
 [Usage and troubleshooting](https://github.com/dmitry-zaets/agr/blob/main/docs/usage.md) · [Source and issues](https://github.com/dmitry-zaets/agr) · [MIT license](https://github.com/dmitry-zaets/agr/blob/main/LICENSE)

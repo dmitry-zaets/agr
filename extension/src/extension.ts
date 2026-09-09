@@ -4,11 +4,12 @@ import path from 'node:path';
 import { cp, mkdir, access } from 'node:fs/promises';
 import { allSteps, Change, Guide, hash, parseGuide, selectedChanges, Snapshot, Step, stepFingerprint, stepState, uncoveredChanges } from '../../packages/core/src/model';
 import { git, repositoryRoot } from '../../packages/core/src/git';
+import { listReviews, reviewPath, ReviewFile } from '../../packages/core/src/reviews';
 import { changeContent, snapshotForGuide, scopeLabel } from '../../packages/core/src/scope';
 
 class Item extends vscode.TreeItem {
   children: Item[] = [];
-  constructor(label: string, public step?: Step, public change?: Change) { super(label); }
+  constructor(label: string, public step?: Step, public change?: Change, public reviewFile?: string) { super(label); }
 }
 
 class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentProvider, vscode.Disposable {
@@ -33,6 +34,10 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
   private items: Item[] = [];
   private root?: string;
   private guide?: Guide;
+  private reviewFile?: string;
+  private reviews: ReviewFile[] = [];
+  private epoch = 0;
+  private get reviewKey(): string | undefined { return this.root && this.reviewFile ? path.join(this.root, '.agr', this.reviewFile) : undefined; }
   private snapshot?: Snapshot;
   private activeId?: string;
   private openedFingerprints = new Map<string, string>();
@@ -47,12 +52,12 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
       }),
       vscode.window.onDidChangeVisibleTextEditors(() => this.decorate()),
       vscode.workspace.onDidSaveTextDocument(() => this.schedule()),
-      vscode.workspace.onDidChangeWorkspaceFolders(() => { this.root = undefined; this.schedule(); })
+      vscode.workspace.onDidChangeWorkspaceFolders(() => { this.root = undefined; this.resetReview(); this.schedule(); })
     );
     const watcher = vscode.workspace.createFileSystemWatcher('**/*');
     const observe = (uri: vscode.Uri) => {
       const relative = this.root ? path.relative(this.root, uri.fsPath) : '';
-      if (!relative.split(path.sep).some(p => ['node_modules', '.git', 'dist'].includes(p)) && !relative.endsWith('agr.snapshot.json')) this.schedule();
+      if (!relative.split(path.sep).some(p => ['node_modules', '.git', 'dist'].includes(p)) && !relative.startsWith('.agr' + path.sep + '.cache' + path.sep)) this.schedule();
     };
     this.disposables.push(watcher, watcher.onDidChange(observe), watcher.onDidCreate(observe), watcher.onDidDelete(observe));
   }
@@ -80,16 +85,53 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     const picked = roots.length === 1 ? roots[0] : await vscode.window.showQuickPick(roots, { title: 'Choose repository to review' });
     if (picked) {
       this.root = picked;
-      this.activeId = undefined;
-      this.openedFingerprints.clear();
-      this.threads.forEach(t => t.dispose()); this.threads = [];
-      this.highlights.clear(); this.decorate();
+      this.resetReview();
       await this.context.workspaceState.update('agr.root', picked);
       // Watch the actual Git directory too (including worktree HEAD and index).
       const gitDir = (await git(picked, ['rev-parse', '--absolute-git-dir'])).trim();
       const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(gitDir, '{HEAD,index,refs/**,packed-refs}'));
       this.disposables.push(watcher, watcher.onDidChange(() => this.schedule()), watcher.onDidCreate(() => this.schedule()));
     }
+    await this.refresh();
+  }
+
+  private resetReview(file?: string): void {
+    this.epoch++; this.generation++;
+    this.reviewFile = file; this.guide = undefined; this.snapshot = undefined;
+    this.activeId = undefined; this.items = [];
+    this.openedFingerprints.clear(); this.pendingReviews.clear();
+    this.threads.forEach(thread => thread.dispose()); this.threads = [];
+    this.highlights.clear(); this.decorate();
+  }
+  async selectReview(file?: string): Promise<void> {
+    await this.refresh();
+    if (!this.root) throw new Error('Open a Git repository first.');
+    const root = this.root;
+    const reviews = await listReviews(root);
+    if (!reviews.length) throw new Error('No reviews found. Ask your agent to create .agr/<name>.json.');
+    if (!file) {
+      const choices = await Promise.all(reviews.map(async review => {
+        let status = review.error ? 'Invalid guide' : '';
+        let scope = '';
+        if (review.guide) {
+          try {
+            const snapshot = await snapshotForGuide(root, review.guide);
+            const states = allSteps(review.guide).map(step => stepState(step, snapshot, review.guide!.base));
+            status = `${states.filter(state => state === 'reviewed').length}/${states.length} reviewed`;
+            const stale = states.filter(state => state === 'stale').length;
+            if (stale) status += ` · ${stale} stale`;
+            scope = scopeLabel(snapshot);
+          } catch { status = 'Unavailable comparison'; }
+        }
+        return { label: review.guide?.title ?? review.file, description: `${review.file} · ${status}`, detail: scope || review.error, file: review.file };
+      }));
+      file = (await vscode.window.showQuickPick(choices, { title: 'Switch review', matchOnDescription: true, matchOnDetail: true }))?.file;
+    }
+    if (!file || this.root !== root) return;
+    if (!reviews.some(review => review.file === file)) throw new Error('Choose an existing review inside .agr/.');
+    await this.mutation;
+    this.resetReview(file);
+    await this.context.workspaceState.update(`agr.review:${root}`, file);
     await this.refresh();
   }
 
@@ -111,14 +153,23 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
           ? saved : folders[0] ? await repositoryRoot(folders[0].uri.fsPath) : undefined;
       }
       if (!this.root) { this.items = []; this.view.message = 'Open a Git repository to begin.'; this.changed.fire(); return; }
-      let guide: Guide | undefined;
-      let invalid: string | undefined;
-      try {
-        const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(path.join(this.root, 'agr.json')));
-        guide = parseGuide(Buffer.from(bytes).toString('utf8'));
-      } catch (error) {
-        if (!(error instanceof vscode.FileSystemError && error.code === 'FileNotFound')) invalid = (error as Error).message;
+      const reviews = await listReviews(this.root);
+      if (generation !== this.generation) return;
+      this.reviews = reviews;
+      const saved = this.context.workspaceState.get<string>(`agr.review:${this.root}`);
+      const file = reviews.find(review => review.file === (this.reviewFile ?? saved))?.file ?? reviews[0]?.file;
+      if (file !== this.reviewFile) {
+        this.resetReview(file);
+        await this.context.workspaceState.update(`agr.review:${this.root}`, file);
+        this.refreshAgain = true;
+        return;
       }
+      const selected = reviews.find(review => review.file === file);
+      const guide = selected?.guide;
+      this.guide = guide;
+      this.view.title = guide?.title ?? 'AGR';
+      this.view.description = file;
+      if (selected?.error) throw new Error(`Guide error in .agr/${file}: ${selected.error}`);
       const snapshot = await snapshotForGuide(this.root, guide);
       if (generation !== this.generation) return;
       this.snapshot = snapshot; this.guide = guide;
@@ -128,13 +179,13 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
       if (guide) {
         for (const [index, group] of guide.groups.entries()) {
           const parent = new Item(`${index + 1}. ${group.title}`);
-          parent.id = group.id;
+          parent.id = `${this.reviewFile}:${group.id}`;
           parent.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
           parent.children = group.steps.map(step => {
             const state = stepState(step, snapshot, guide.base);
             if (state === 'reviewed') reviewed++;
-            const item = new Item(step.title, step);
-            item.id = step.id; item.contextValue = 'step';
+            const item = new Item(step.title, step, undefined, this.reviewKey);
+            item.id = `${this.reviewFile}:${step.id}`; item.contextValue = 'step';
             const files = [...new Set(step.changes.map(id => changes.get(id)?.file).filter(Boolean))] as string[];
             item.description = state === 'stale' ? 'Needs another look' : `${files.map(f => path.basename(f)).join(', ')}${step.optional ? ' · optional' : ''}`;
             const tooltip = new vscode.MarkdownString();
@@ -161,7 +212,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
         parent.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
         parent.iconPath = new vscode.ThemeIcon('warning');
         parent.children = uncovered.map(change => {
-          const item = new Item(`${path.basename(change.file)} · ${change.kind === 'text' ? `L${change.newLines ? change.newStart : change.oldStart}` : change.kind}`, undefined, change);
+          const item = new Item(`${path.basename(change.file)} · ${change.kind === 'text' ? `L${change.newLines ? change.newStart : change.oldStart}` : change.kind}`, undefined, change, this.reviewKey);
           item.description = path.dirname(change.file);
           item.tooltip = change.file;
           item.command = { command: 'agr.open', title: 'Open Change', arguments: [item] };
@@ -170,14 +221,30 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
         this.items.push(parent);
       }
       this.view.title = guide?.title ?? 'AGR';
-      this.view.message = invalid ? `Guide error: ${invalid}` : guide
+      this.view.message = guide
         ? `${reviewed} / ${allSteps(guide).length} reviewed · ${uncovered.length} unguided\n${scopeLabel(snapshot)}${guide.summary ? '\n' + guide.summary : ''}`
-        : 'Ask your agent to create agr.json using the agr skill.';
+        : 'Ask your agent to create .agr/<name>.json using the agr skill.';
       this.changed.fire();
     } catch (error) {
       if (generation !== this.generation) return;
-      this.snapshot = undefined; this.guide = undefined; this.items = [];
-      this.view.message = (error as Error).message; this.changed.fire();
+      this.snapshot = undefined;
+      this.threads.forEach(thread => thread.dispose()); this.threads = [];
+      this.highlights.clear(); this.decorate();
+      this.items = this.guide?.groups.map((group, index) => {
+        const parent = new Item(`${index + 1}. ${group.title}`);
+        parent.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
+        parent.children = group.steps.map(step => {
+          const item = new Item(step.title);
+          item.description = 'Unavailable';
+          const note = new vscode.MarkdownString();
+          appendReviewText(note, step.note + (step.focus ? `\n\nCheck: ${step.focus}` : ''));
+          item.tooltip = note; item.iconPath = new vscode.ThemeIcon('warning');
+          return item;
+        });
+        return parent;
+      }) ?? [];
+      this.view.message = `Review unavailable: ${(error as Error).message}\nOpen the guide to read its notes, or switch reviews. Fetch missing commits or ask your agent to refresh this review.`;
+      this.changed.fire();
     }
   }
 
@@ -197,6 +264,8 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
   async open(item?: Item): Promise<void> {
     if (!item) item = this.items.flatMap(i => i.children).find(i => i.step?.id === this.activeId);
     if (!item || (!item.step && !item.change)) return;
+    if (item.reviewFile !== this.reviewKey) throw new Error('The active review changed. Select a step in the current review.');
+    const epoch = this.epoch;
     if (!this.snapshot) await this.refresh();
     if (!this.snapshot || !this.root) throw new Error('Could not read current Git changes.');
     const step = item.step && this.guide ? allSteps(this.guide).find(s => s.id === item!.step!.id) : undefined;
@@ -205,6 +274,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     // Opening a step must not wait for every unrelated file to be scanned.
     // Revalidate its files so anchors still refer to the code being displayed.
     const current = await snapshotForGuide(this.root, this.guide, requestedFiles);
+    if (epoch !== this.epoch) return;
     const selected = step ? selectedChanges(step, current) : item.change && current.changes.some(c => c.id === item!.change!.id) ? [item.change] : [];
     if (selected.length !== ids.length || !ids.length || (step && this.guide?.base !== current.base)) {
       throw new Error('This step is out of date. Ask your agent to regenerate the guide; current changes are listed under Unguided changes.');
@@ -218,6 +288,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
       const file = representative.file;
       const before = await changeContent(this.root, current, representative, 'original');
       const after = await changeContent(this.root, current, representative, 'modified');
+      if (epoch !== this.epoch) return;
       const changes = selected.filter(c => c.file === file && c.comparisonId === representative.comparisonId);
       if (changes.some(c => c.kind === 'binary')) {
         void vscode.window.showInformationMessage(`${file}: binary change. Review this file with an appropriate viewer, then mark the step reviewed.`);
@@ -234,6 +305,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
       const first = changes[0];
       const target = first.newLines ? this.range(first.newStart, first.newLines, after) : this.range(first.newStart || 1, 1, after);
       await vscode.commands.executeCommand('vscode.diff', left, right, `${step?.title ?? 'Unguided change'} — ${path.basename(file)}${comparison ? ` [${comparison.title ?? comparison.id}]` : ''}`, { preview: false, selection: new vscode.Range(target.start, target.start) });
+      if (epoch !== this.epoch) return;
       if (step) {
         const isDeletion = first.newLines === 0 && first.oldLines > 0;
         const body = new vscode.MarkdownString();
@@ -257,24 +329,26 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     });
   }
   async toggle(item?: Item, desired?: boolean): Promise<void> {
+    if (item && item.reviewFile !== this.reviewKey) throw new Error('The active review changed.');
     const id = item?.step?.id ?? this.activeId;
+    const root = this.root, file = this.reviewFile, epoch = this.epoch;
     const current = this.items.flatMap(group => group.children).find(entry => entry.step?.id === id);
-    if (!id || !current) return;
+    if (!id || !current || !root || !file) return;
     const reviewed = desired ?? !(this.pendingReviews.get(id)?.reviewed ?? (current.checkboxState === vscode.TreeItemCheckboxState.Checked));
     const token = Symbol(id);
     this.pendingReviews.set(id, { token, reviewed });
     this.changed.fire();
-    const result = this.mutation.then(() => this.toggleOnce(current, reviewed)).finally(() => {
+    const result = this.mutation.then(() => this.toggleOnce(current, reviewed, root, file, epoch)).finally(() => {
       if (this.pendingReviews.get(id)?.token === token) this.pendingReviews.delete(id);
       this.changed.fire();
     });
     this.mutation = result.catch(() => {});
     return result;
   }
-  private async toggleOnce(item?: Item, desired?: boolean): Promise<void> {
+  private async toggleOnce(item: Item, desired: boolean, root: string, file: string, epoch: number): Promise<void> {
     const id = item?.step?.id ?? this.activeId;
-    if (!id || !this.root) return;
-    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(this.root, 'agr.json')));
+    if (!id || epoch !== this.epoch) throw new Error('The active review changed.');
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(await reviewPath(root, file)));
     if (document.isDirty) throw new Error('Save the guide file before changing review progress.');
     // Agents write this file outside the editor. Its saved content may be newer
     // than an already-open text document while VS Code's file watcher catches up.
@@ -284,7 +358,8 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     if (!step) throw new Error('This step was removed. Refresh the guide.');
     const known = this.snapshot?.changes.filter(change => step.changes.includes(change.id)) ?? [];
     const files = known.length === step.changes.length ? [...new Set(known.map(change => change.file))] : undefined;
-    const snapshot = await snapshotForGuide(this.root, guide, files);
+    const snapshot = await snapshotForGuide(root, guide, files);
+    if (epoch !== this.epoch) throw new Error('The active review changed.');
     const reviewed = desired ?? stepState(step, snapshot, guide.base) !== 'reviewed';
     if (reviewed) {
       if (guide.base !== snapshot.base || selectedChanges(step, snapshot).length !== step.changes.length) throw new Error('The code in this step changed. Regenerate the guide before marking it reviewed.');
@@ -300,6 +375,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     // Write the saved artifact directly: an agent may have updated it while an
     // editor still has an older disk timestamp. Never dirty a stale editor buffer.
     await vscode.workspace.fs.writeFile(document.uri, Buffer.from(JSON.stringify(guide, null, 2) + '\n'));
+    if (epoch !== this.epoch) return;
     this.generation++;
     this.guide = guide;
     const current = this.items.flatMap(group => group.children).find(entry => entry.step?.id === id);
@@ -324,12 +400,15 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
   }
   async edit(): Promise<void> {
     if (!this.root) throw new Error('Open a Git repository first.');
-    await vscode.window.showTextDocument(vscode.Uri.file(path.join(this.root, 'agr.json')));
+    if (!this.reviewFile) throw new Error('Create .agr/<name>.json first.');
+    await vscode.window.showTextDocument(vscode.Uri.file(await reviewPath(this.root, this.reviewFile)));
   }
   async exportSnapshot(): Promise<void> {
     await this.refresh();
     if (!this.snapshot || !this.root) throw new Error('Open a Git repository first.');
-    const uri = vscode.Uri.file(path.join(this.root, 'agr.snapshot.json'));
+    const directory = path.join(this.root, '.agr', '.cache');
+    await mkdir(directory, { recursive: true });
+    const uri = vscode.Uri.file(path.join(directory, `${this.reviewFile?.slice(0, -5) ?? 'uncommitted'}.snapshot.json`));
     await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(this.snapshot, null, 2) + '\n'));
     await vscode.window.showTextDocument(uri);
   }
@@ -350,7 +429,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     }
     void vscode.window.showInformationMessage(`Installed ${installed.join(' and ')}. Ask your agent: “Use the agr skill to guide my uncommitted changes.”`);
   }
-  getState(): { guide?: Guide; snapshot?: Snapshot; items: Item[] } { return { guide: this.guide, snapshot: this.snapshot, items: this.items }; }
+  getState(): { guide?: Guide; snapshot?: Snapshot; items: Item[]; reviewFile?: string; reviews: ReviewFile[] } { return { guide: this.guide, snapshot: this.snapshot, items: this.items, reviewFile: this.reviewFile, reviews: this.reviews }; }
 }
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -360,6 +439,7 @@ export async function activate(context: vscode.ExtensionContext) {
     try { return await handler(...args); } catch (error) { await vscode.window.showErrorMessage((error as Error).message); }
   }));
   command('refresh', () => app.refresh());
+  command('selectReview', () => app.selectReview());
   command('selectRepository', () => app.selectRepository());
   command('open', item => vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Opening review step…' }, () => app.open(item)));
   command('toggle', item => app.toggle(item));

@@ -25,4 +25,8 @@ For a PR link, the skill instructs the agent to retrieve metadata, verify the lo
 - Binary changes are listed and tracked by fingerprint, with a prompt to inspect them in an appropriate viewer. They are not rendered as text. Merge conflicts block local working/index scans; committed comparisons remain independent of local conflicts. Oversized file reads and Git outputs produce explicit errors rather than silently disappearing.
 - Use **Select Repository** for multi-root workspaces. Nested repositories and submodule internals should be opened as their own workspace folders.
 
-The guide and snapshot are local artifacts excluded from their own review. To keep them out of your repository status, optionally add `agr.json` and `agr.snapshot.json` to your own Git ignore configuration. The extension does not change ignore files.
+The guide and snapshot are local artifacts excluded from their own review. To keep them out of your repository status, optionally add `.agr/` to your own Git ignore configuration. The extension does not change ignore files.
+
+## Multiple reviews
+
+Each `.agr/*.json` file has independent progress. Switching reviews clears the previous review’s comments and range markers. A stale local guide keeps its notes, but opening an outdated step requires regeneration. If pinned Git objects are missing, the review remains listed as unavailable; fetch the commits or open the guide to read its notes. AGR does not archive old local file contents.
