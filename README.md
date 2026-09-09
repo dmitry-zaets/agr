@@ -6,20 +6,9 @@ Agents can write a feature across dozens of files. An alphabetical file list mak
 
 Claude Code or Codex writes `agr.json` in your repository using the included skill. The extension turns that file into a review sidebar. One file can appear in several sections, with each step focusing on a different part of its diff.
 
-```text
-Authentication update
-  Contracts
-    ✓ Define the session shape
-  Behavior
-    ✓ Create a session on sign-in
-    □ Expire a session on sign-out
-  Verification
-    □ Check expiration and retry tests
-  Generated files · optional
-    □ Refresh API types
-```
+![AGR reviewing its own code: ordered steps in the sidebar, a focused native diff, and an inline review question.](docs/assets/agr-demo.jpg)
 
-*Illustrative review structure; the agent chooses the sections and order.*
+*AGR reviewing its own review model. The same file appears in several steps, each focused on a different part of the diff.*
 
 ## Get started
 
