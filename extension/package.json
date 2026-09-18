@@ -86,7 +86,7 @@
       },
       {
         "command": "agr.installSkill",
-        "title": "Install Agent Skills in Repository",
+        "title": "Install Agent Skills",
         "category": "AGR"
       },
       {

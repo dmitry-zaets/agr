@@ -16,14 +16,14 @@ Requires VS Code 1.95+, Git, Node.js 22+ for the skill helper, and Claude Code o
 
 1. Install [AGR from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=dmitry-zaets.agr), or run `code --install-extension dmitry-zaets.agr`.
 2. Open the Git repository you want to review in a trusted VS Code workspace.
-3. Run **AGR: Install Agent Skills in Repository** from the Command Palette.
+3. Run **AGR: Install Agent Skills** from the Command Palette, then choose **Globally** or **This repository**.
 4. Ask your agent:
 
    > Use the agr skill to create a guided review of my uncommitted changes. Explain the important decisions and split different concerns in the same file into separate steps.
 
 5. Open **AGR** in the activity bar. Use **Switch Review** to choose a guide. Click a step to open its diff and notes, then mark it reviewed. Use the arrows to move between steps.
 
-The install command copies the skill to `.claude/skills/agr/` and `.agents/skills/agr/`. Start a fresh agent session if the skill is not discovered. Existing skill installations are not overwritten; see [updating skills](docs/usage.md#updating-skills).
+For repository installation, the command copies the skill to `.claude/skills/agr/` and `.agents/skills/agr/`. Start a fresh agent session if the skill is not discovered. Existing skill installations are not overwritten; see [updating skills](docs/usage.md#updating-skills).
 
 ## Choose what to review
 
@@ -59,6 +59,12 @@ Store guides directly in `.agr/`, for example `.agr/checkout-flow.json` and `.ag
 Root `agr.json` is no longer read. To reuse a 1.0 guide, move it to `.agr/<name>.json` and update the agent skill. The guide’s JSON structure is unchanged.
 
 Pinned commit reviews remain readable while their Git objects exist locally. Local reviews can become stale as files, the index, or HEAD change. Stale notes remain visible; regenerate the affected guide to review the current code. AGR does not archive old working-file contents.
+
+## Skill installation location
+
+**AGR: Install Agent Skills** asks whether to install **Globally** or in **This repository**. Global installation works without an open project and writes to `~/.agents/skills/agr/` for Codex and `~/.claude/skills/agr/` for Claude Code. If `CLAUDE_CONFIG_DIR` is set in VS Code’s environment, its directory replaces `~/.claude`. Repository installation writes both skill folders under the selected Git root. Canceling the prompt writes nothing.
+
+Existing skills are not overwritten. Preserve customizations and move existing copies aside before reinstalling. Older repository skills may take precedence over a global installation, so update or remove those copies when switching to global skills. Review files always stay in each project’s `.agr/` folder. Start a fresh agent session after installing.
 
 ## Development
 

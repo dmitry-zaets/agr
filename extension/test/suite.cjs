@@ -146,7 +146,7 @@ exports.run = async function () {
   await app.refresh();
   assert.equal(app.getState().reviewFile, 'fixture.json', 'deleting a selected guide chooses the remaining review');
 
-  await app.installSkill();
+  await app.installSkill('repository');
   for (const folder of ['.agents', '.claude']) {
     assert.ok((await fs.readFile(path.join(root, folder, 'skills/agr/SKILL.md'), 'utf8')).includes('name: agr'));
     await fs.access(path.join(root, folder, 'skills/agr/scripts/agr.cjs'));

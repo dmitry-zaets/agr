@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
 import { appendReviewText } from './commentText';
 import path from 'node:path';
-import { cp, mkdir, access } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { installSkills, skillTargets, InstallScope } from './skillInstall';
 import { allSteps, Change, Guide, hash, parseGuide, selectedChanges, Snapshot, Step, stepFingerprint, stepState, uncoveredChanges } from '../../packages/core/src/model';
 import { git, repositoryRoot } from '../../packages/core/src/git';
 import { listReviews, reviewPath, ReviewFile } from '../../packages/core/src/reviews';
@@ -412,22 +414,21 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(this.snapshot, null, 2) + '\n'));
     await vscode.window.showTextDocument(uri);
   }
-  async installSkill(): Promise<void> {
-    await this.refresh();
-    if (!this.root) throw new Error('Open a Git repository first.');
-    const installed: string[] = [];
-    for (const folder of ['.agents', '.claude']) {
-      const target = path.join(this.root, folder, 'skills', 'agr');
-      try { await access(target); throw new Error(`${target} already exists. Move it aside before installing a new copy.`); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  async installSkill(scope?: InstallScope): Promise<void> {
+    if (!scope) {
+      const choice = await vscode.window.showQuickPick([
+        { label: 'Globally', description: 'Available across your projects', scope: 'global' as const,
+          detail: skillTargets('global', undefined, homedir(), process.env.CLAUDE_CONFIG_DIR).join(' • ') },
+        { label: 'This repository', description: 'Only for the selected Git repository', scope: 'repository' as const,
+          detail: '.agents/skills/agr and .claude/skills/agr in the repository root' }
+      ], { title: 'Where should AGR install the agent skills?', placeHolder: 'Choose an installation location for Claude Code and Codex' });
+      if (!choice) return;
+      scope = choice.scope;
     }
-    for (const folder of ['.agents', '.claude']) {
-      const target = path.join(this.root, folder, 'skills', 'agr');
-      await mkdir(path.dirname(target), { recursive: true });
-      await cp(this.context.asAbsolutePath('dist/skill'), target, { recursive: true, force: false, errorOnExist: true });
-      installed.push(path.relative(this.root, target));
-    }
-    void vscode.window.showInformationMessage(`Installed ${installed.join(' and ')}. Ask your agent: “Use the agr skill to guide my uncommitted changes.”`);
+    if (scope === 'repository') await this.refresh();
+    const targets = skillTargets(scope, this.root, homedir(), process.env.CLAUDE_CONFIG_DIR);
+    await installSkills(this.context.asAbsolutePath('dist/skill'), targets);
+    void vscode.window.showInformationMessage(`Installed AGR skills ${scope === 'global' ? 'globally' : 'in this repository'}: ${targets.join(' and ')}. Start a fresh agent session to use them.`);
   }
   getState(): { guide?: Guide; snapshot?: Snapshot; items: Item[]; reviewFile?: string; reviews: ReviewFile[] } { return { guide: this.guide, snapshot: this.snapshot, items: this.items, reviewFile: this.reviewFile, reviews: this.reviews }; }
 }

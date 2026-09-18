@@ -2,7 +2,7 @@
 
 ## Guide generation
 
-Run **AGR: Install Agent Skills in Repository**, then ask Claude Code or Codex to use the `agr` skill. The agent must write and validate `<git-root>/.agr/<name>.json`. A plan in chat or a Markdown file in a scratchpad is not the deliverable.
+Run **AGR: Install Agent Skills**, then ask Claude Code or Codex to use the `agr` skill. The agent must write and validate `<git-root>/.agr/<name>.json`. A plan in chat or a Markdown file in a scratchpad is not the deliverable.
 
 Examples:
 
@@ -21,6 +21,12 @@ The agent can organize steps around concerns instead of file names. Each step in
 Click a sidebar step to open a native diff. Some steps reference multiple files. Notes appear as native comments, with markers on the relevant ranges. Check the step when finished; progress is stored in the guide. **Next Step** and **Previous Step** follow the guide's order.
 
 Use **AGR: Switch Review** to choose among `.agr/*.json` files. The picker shows scope, progress, and stale or unavailable status. Selection is remembered per repository. Use **AGR: Open Guide File** to inspect or edit the JSON. Changing a step's explanation invalidates its previous review. Use **AGR: Select Repository** when several Git roots are open.
+
+## Skill installation location
+
+**AGR: Install Agent Skills** asks whether to install **Globally** or in **This repository**. Global installation works without an open project and writes to `~/.agents/skills/agr/` for Codex and `~/.claude/skills/agr/` for Claude Code. If `CLAUDE_CONFIG_DIR` is set in VS Code’s environment, its directory replaces `~/.claude`. Repository installation writes both skill folders under the selected Git root. Canceling the prompt writes nothing.
+
+Existing skills are not overwritten. Preserve customizations and move existing copies aside before reinstalling. Older repository skills may take precedence over a global installation, so update or remove those copies when switching to global skills. Review files always stay in each project’s `.agr/` folder. Start a fresh agent session after installing.
 
 ## Updating skills
 
