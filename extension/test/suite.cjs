@@ -55,10 +55,9 @@ exports.run = async function () {
     { id: 'new-first', title: 'First half', note: 'Read the beginning.', changes: [added.id], selections: { [added.id]: { modified: { start: 1, end: 2 } } } },
     { id: 'new-last', title: 'Second half', note: 'Read the ending.', changes: [added.id], selections: { [added.id]: { modified: { start: 3, end: 4 } } } }
   ] });
-  const document = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(root, '.agr', 'fixture.json')));
-  const edit = new vscode.WorkspaceEdit();
-  edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), JSON.stringify(guide, null, 2));
-  await vscode.workspace.applyEdit(edit); await document.save();
+  // Regenerate the guide like an agent: write the saved artifact directly.
+  // An editor buffer may still have the timestamp from before a progress save.
+  await vscode.workspace.fs.writeFile(vscode.Uri.file(path.join(root, '.agr', 'fixture.json')), Buffer.from(JSON.stringify(guide, null, 2)));
   await app.refresh();
   const lastPart = app.getState().items[2].children[1];
   await app.open(lastPart);
