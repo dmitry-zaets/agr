@@ -22,6 +22,23 @@ exports.run = async function () {
   assert.ok(vscode.window.visibleTextEditors.some(e => e.document.uri.scheme === 'agr'), 'native diff snapshot editors opened');
   assert.ok(vscode.window.visibleTextEditors.filter(e => e.document.uri.scheme === 'agr').every(e => e.selection.isEmpty), 'opening a step does not select the reviewed code');
   assert.ok(vscode.workspace.textDocuments.some(d => d.uri.scheme === 'agr' && d.getText().includes('first = 10')), 'working snapshot contains new code');
+  let diffEditor = vscode.window.visibleTextEditors.find(e => e.document.uri.path === '/focused/Working-tree/feature.ts');
+  assert.ok(diffEditor);
+  assert.ok(!diffEditor.document.getText().includes('last = 30'), 'another review item’s changes stay out of the focused diff');
+  await vscode.commands.executeCommand('agr.openFullDiff');
+  diffEditor = vscode.window.visibleTextEditors.find(e => e.document.uri.path === '/full/Working-tree/feature.ts');
+  assert.ok(diffEditor.document.getText().includes('last = 30'), 'full diff restores other changes');
+  await app.open(step);
+  const existingThread = app.threads[0];
+  existingThread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+  const reopening = app.open(step);
+  assert.equal(app.threads[0], existingThread, 'existing annotations stay in place during Git reads');
+  await reopening;
+  assert.equal(app.threads[0], existingThread, 'reopening the same diff preserves its comment instead of blinking');
+  assert.equal(existingThread.collapsibleState, vscode.CommentThreadCollapsibleState.Expanded);
+  await Promise.all([app.open(step), app.open(app.getState().items[1].children[0])]);
+  assert.equal(app.activeId, 'second-step', 'rapid clicks leave the latest item active');
+  await app.open(step);
   const saving = app.toggle(step, true);
   assert.equal(app.getTreeItem(step).description, 'Saving review…', 'feedback appears before disk validation completes');
   assert.equal(app.getTreeItem(step).checkboxState, vscode.TreeItemCheckboxState.Checked);
@@ -61,8 +78,9 @@ exports.run = async function () {
   await app.refresh();
   const lastPart = app.getState().items[2].children[1];
   await app.open(lastPart);
-  assert.ok(vscode.window.visibleTextEditors.some(editor => editor.document.uri.path === '/Working-tree/new.ts' && editor.selection.start.line === 2), 'second range opens at line 3 within one added hunk');
-  assert.ok(vscode.window.visibleTextEditors.filter(editor => editor.document.uri.path === '/Working-tree/new.ts').every(editor => editor.selection.isEmpty), 'range navigation moves the cursor without a selection overlay');
+  assert.ok(vscode.window.visibleTextEditors.some(editor => editor.document.uri.path === '/focused/Working-tree/new.ts' && editor.selection.start.line === 1), 'second range opens at the first selected line below its source-location header');
+  assert.ok(vscode.window.visibleTextEditors.filter(editor => editor.document.uri.path === '/focused/Working-tree/new.ts').every(editor => editor.selection.isEmpty), 'range navigation moves the cursor without a selection overlay');
+  assert.ok(vscode.window.visibleTextEditors.filter(e => e.document.uri.path === '/focused/Working-tree/new.ts').every(e => !e.document.getText().includes('one\n') && !e.document.getText().includes('two\n')), 'other slices of an added file stay hidden');
   await app.toggle(lastPart, true);
   assert.equal(app.getState().items[2].children[0].checkboxState, vscode.TreeItemCheckboxState.Unchecked, 'first slice remains pending');
   assert.equal(app.getState().items[2].children[1].checkboxState, vscode.TreeItemCheckboxState.Checked, 'second slice is reviewed');
@@ -86,16 +104,16 @@ exports.run = async function () {
   }
   await loadScope({ comparisons: [{ id: 'stage', kind: 'staged', paths: ['feature.ts'] }, { id: 'work', kind: 'unstaged', paths: ['feature.ts'] }] });
   await app.open(app.getState().items[0].children[0]);
-  assert.ok(vscode.window.visibleTextEditors.some(e => e.document.uri.path === '/stage/Index/feature.ts' && e.document.getText().includes('first = 100;')), 'staged diff shows index bytes');
+  assert.ok(vscode.window.visibleTextEditors.some(e => e.document.uri.path === '/focused/stage/Index/feature.ts' && e.document.getText().includes('first = 100;')), 'staged diff shows index bytes');
   await app.open(app.getState().items[0].children[1]);
-  assert.ok(vscode.window.visibleTextEditors.some(e => e.document.uri.path === '/work/Working-tree/feature.ts' && e.document.getText().includes('first = 1000;')), 'unstaged diff shows working bytes');
+  assert.ok(vscode.window.visibleTextEditors.some(e => e.document.uri.path === '/focused/work/Working-tree/feature.ts' && e.document.getText().includes('first = 1000;')), 'unstaged diff shows working bytes');
   await app.toggle(app.getState().items[0].children[0], true);
   assert.equal(app.getState().items[0].children[0].checkboxState, vscode.TreeItemCheckboxState.Checked);
   git('commit', '-qm', 'commit staged version');
   const committed = git('rev-parse', 'HEAD');
   await loadScope({ comparisons: [{ id: 'history', kind: 'revisions', base: baseCommit, head: committed }] });
   await app.open(app.getState().items[0].children[0]);
-  assert.ok(vscode.window.visibleTextEditors.some(e => e.document.uri.path === `/history/${committed.slice(0, 8)}/feature.ts` && e.document.getText().includes('first = 100;')), 'committed review ignores unrelated dirty worktree bytes');
+  assert.ok(vscode.window.visibleTextEditors.some(e => e.document.uri.path === `/focused/history/${committed.slice(0, 8)}/feature.ts` && e.document.getText().includes('first = 100;')), 'committed review ignores unrelated dirty worktree bytes');
 
   // Fake the transport only: exercise saved progress, queueing and disconnection
   // through the real extension without mutating a user's GitHub account.
@@ -129,6 +147,48 @@ exports.run = async function () {
   const beforeDisconnect = mutations.length;
   releaseRequest(); await app.githubQueue;
   assert.equal(mutations.length, beforeDisconnect, 'disconnect cancels queued writes');
+
+  const metadataFile = path.join(root, '.agr', 'fixture.json');
+  const metadataGuide = JSON.parse(await fs.readFile(metadataFile, 'utf8'));
+  metadataGuide.pullRequestUrl = 'https://github.com/test/repo/pull/1';
+  let promptCount = 0;
+  let answer = 'Keep local';
+  app.askGitHubSync = async () => { promptCount++; return answer; };
+  await fs.writeFile(metadataFile, JSON.stringify(metadataGuide));
+  await app.refresh();
+  async function settlePrompt() {
+    for (let i = 0; i < 100 && app.githubPromptPending; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(app.githubPromptPending, false, 'prompt settled');
+  }
+  await app.offerGitHubSync(); await settlePrompt();
+  assert.equal(promptCount, 1);
+  assert.equal(app.context.workspaceState.get(syncKey), undefined, 'Keep local does not connect');
+  app.githubPrompts.clear();
+  await app.offerGitHubSync();
+  assert.equal(promptCount, 1, 'Keep local survives a new session');
+  const choiceKey = app.githubChoiceKey(root, 'fixture.json', metadataGuide.pullRequestUrl);
+  await app.context.workspaceState.update(choiceKey, undefined);
+  answer = undefined;
+  await app.offerGitHubSync(); await settlePrompt();
+  assert.equal(app.context.workspaceState.get(syncKey), undefined, 'dismissal grants no permission');
+  await app.offerGitHubSync();
+  assert.equal(promptCount, 2, 'dismissal does not repeatedly prompt in one session');
+  app.githubPrompts.clear(); answer = 'Enable sync';
+  await app.offerGitHubSync(); await settlePrompt(); await app.githubQueue;
+  assert.equal(app.context.workspaceState.get(syncKey).pr.number, 1);
+  app.githubPrompts.clear(); await app.offerGitHubSync();
+  assert.equal(promptCount, 3, 'an enabled connection is remembered');
+  await app.disconnectGitHub();
+  app.githubPrompts.clear(); await app.offerGitHubSync();
+  assert.equal(promptCount, 3, 'disconnect also remembers Keep local');
+  await app.context.workspaceState.update(syncKey, { pr: { repo: 'test/repo', number: 1 }, base: metadataGuide.base });
+  const mutationsBeforeRetarget = mutations.length;
+  await fs.writeFile(metadataFile, JSON.stringify({ ...metadataGuide, pullRequestUrl: 'https://github.com/test/repo/pull/2' }));
+  app.queueGitHub(root, 'fixture.json'); await app.githubQueue;
+  assert.equal(mutations.length, mutationsBeforeRetarget, 'new PR metadata cannot reuse the old connection');
+  await app.disconnectGitHub();
+  delete metadataGuide.pullRequestUrl;
+  await fs.writeFile(metadataFile, JSON.stringify(metadataGuide)); await app.refresh();
 
   // Two guides deliberately share step IDs: identity and writes must stay isolated.
   const firstFile = path.join(root, '.agr', 'fixture.json');

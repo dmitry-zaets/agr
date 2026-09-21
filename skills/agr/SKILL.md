@@ -47,6 +47,8 @@ To split a single hunk (especially a newly added file), add `selections` keyed b
 
 ## Write the guide
 
+For a requested github.com PR review, include top-level `pullRequestUrl` using the canonical URL returned by PR metadata, including when the user supplied only a PR number. This identifies the PR; it does not authorize GitHub updates. AGR offers **Enable sync** or **Keep local** when the user opens a compatible review. Do not change VS Code workspace state or mark GitHub files Viewed while generating a guide. Omit this field for reviews that do not target a PR.
+
 Read [guide.schema.json](guide.schema.json) for the exact format. Copy `base`, `comparison`, and (when present) the entire resolved `scope` from the snapshot. The helper pins revision names to commit hashes; never invent the top-level base fingerprint or substitute current HEAD. The example below shows the legacy uncommitted format; scoped guides also include `scope`. Example shape (replace the placeholder with an actual snapshot ID):
 
 ```json

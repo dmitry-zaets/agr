@@ -110,6 +110,12 @@
         "command": "agr.disconnectGitHub",
         "title": "Disconnect GitHub PR",
         "category": "AGR"
+      },
+      {
+        "command": "agr.openFullDiff",
+        "title": "Open Full Diff",
+        "category": "AGR",
+        "icon": "$(go-to-file)"
       }
     ],
     "menus": {
@@ -153,6 +159,11 @@
           "command": "agr.disconnectGitHub",
           "when": "view == agr.steps",
           "group": "github"
+        },
+        {
+          "command": "agr.openFullDiff",
+          "when": "view == agr.steps",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
@@ -160,6 +171,11 @@
           "command": "agr.toggle",
           "when": "view == agr.steps && viewItem == step",
           "group": "inline"
+        },
+        {
+          "command": "agr.openFullDiff",
+          "when": "view == agr.steps && viewItem == step",
+          "group": "review"
         }
       ]
     },

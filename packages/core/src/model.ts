@@ -42,6 +42,7 @@ export interface Step {
   review?: { status: 'pending' | 'reviewed'; fingerprint?: string; reviewedAt?: string };
 }
 export interface Guide {
+  pullRequestUrl?: string;
   version: 1;
   title: string;
   summary?: string;
@@ -82,6 +83,7 @@ export function parseGuide(text: string): Guide {
   if (!g || g.version !== 1 || !string(g.title) || !['head-to-working-tree', 'scoped'].includes(g.comparison)) {
     fail('expected version 1, title, and a supported comparison.');
   }
+  if (g.pullRequestUrl !== undefined && (typeof g.pullRequestUrl !== 'string' || !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d*\/?$/.test(g.pullRequestUrl) || !Number.isSafeInteger(Number(g.pullRequestUrl.replace(/\/$/, '').split('/').pop())))) fail('pullRequestUrl must be a github.com PR URL.');
   if (g.comparison === 'scoped') parseScope(g.scope);
   else if (g.scope !== undefined) fail('scope requires comparison "scoped".');
   if (g.base !== null && (typeof g.base !== 'string' || !/^[a-f0-9]{40,64}$/.test(g.base))) fail('base must be a commit hash or null.');

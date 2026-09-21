@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Guide, Snapshot, Step, stepFingerprint } from '../src/model';
+import { Guide, Snapshot, Step, stepFingerprint, parseGuide } from '../src/model';
 import { fileReviewed, parsePullRequest, prComparison, remoteReview, syncFiles, Gh } from '../../../extension/src/githubSync';
 
 function fixture() {
@@ -83,4 +83,14 @@ test('renamed files require reviewed deletion and addition before marking the ne
   guide.groups[0].steps.push({ id: 'old-step', title: 'Old', note: '', changes: ['old'] }); approve();
   await syncFiles(gh, pr, guide, snapshot, ['old.ts'], async () => true);
   assert.equal(m.mutations().length, 1); assert.ok(m.mutations()[0].includes('path=file.ts'));
+});
+
+test('PR metadata is optional and validated without enabling sync', () => {
+  const guide = { version: 1, title: 'PR', comparison: 'head-to-working-tree', base: null, groups: [] };
+  assert.equal(parseGuide(JSON.stringify(guide)).pullRequestUrl, undefined);
+  const url = 'https://github.com/owner/repo/pull/123';
+  assert.equal(parseGuide(JSON.stringify({ ...guide, pullRequestUrl: url })).pullRequestUrl, url);
+  for (const value of [null, {}, 'https://evil.test/a/b/pull/1', 'https://github.com/a/b/pull/0', 'https://github.com/a/b/pull/999999999999999999999']) {
+    assert.throws(() => parseGuide(JSON.stringify({ ...guide, pullRequestUrl: value })), /pullRequestUrl/);
+  }
 });

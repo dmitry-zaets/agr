@@ -136,6 +136,11 @@
     },
     "scope": {
       "$ref": "#/definitions/scope"
+    },
+    "pullRequestUrl": {
+      "type": "string",
+      "pattern": "^https://github\\.com/[\\w.-]+/[\\w.-]+/pull/[1-9]\\d*/?$",
+      "description": "Canonical github.com PR URL. AGR offers optional Viewed sync; this field does not enable it."
     }
   },
   "definitions": {

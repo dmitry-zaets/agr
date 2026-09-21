@@ -32,7 +32,7 @@ Give your agent a PR link, branch name, or description of what you want reviewed
 
 ## Progress that follows the changes
 
-A file can appear in multiple steps, each focused on a specific range. Your notes and review progress are saved in `.agr/<name>.json`. Changed code, notes, or comparison baselines can require another review. Uncovered changes within the guide's scope appear under **Unguided changes**.
+A file can appear in multiple steps, each showing only its selected changes with a few unchanged context lines. Excerpt headers show the source line ranges. Use **AGR: Open Full Diff** for the complete file comparison. Your notes and review progress are saved in `.agr/<name>.json`. Changed code, notes, or comparison baselines can require another review. Uncovered changes within the guide's scope appear under **Unguided changes**.
 
 PR and branch reviews pin their commits. Ask the agent to regenerate the guide after remote updates. Default local comparisons follow HEAD. Diffs show saved snapshots; reopen a step to see newer saved edits. Unsaved buffers are excluded. Binary changes are listed for inspection in another viewer.
 
@@ -42,7 +42,7 @@ Search for **AGR** in the Command Palette to install skills, export a change sna
 
 ## Privacy and local files
 
-AGR works locally by default, collects no telemetry, and requires no model API key. Optional **AGR: Connect GitHub PR** uses your `gh` login to sync fully reviewed files to GitHub’s Viewed checkboxes. Local progress saves before background sync; failures offer Retry. **AGR: Disconnect GitHub PR** disables sync. The first version supports one complete, pinned github.com PR comparison. Your chosen agent handles generation under its own settings and credentials. AGR writes guide progress and, when requested, skill files or an exported snapshot. It does not stage or commit changes.
+AGR works locally by default, collects no telemetry, and requires no model API key. PR guides from the updated skill offer **Enable sync** or **Keep local** when opened. AGR remembers your choice. Optional **AGR: Connect GitHub PR** uses your `gh` login to sync fully reviewed files to GitHub’s Viewed checkboxes. Local progress saves before background sync; failures offer Retry. **AGR: Disconnect GitHub PR** disables sync. The first version supports one complete, pinned github.com PR comparison. Your chosen agent handles generation under its own settings and credentials. AGR writes guide progress and, when requested, skill files or an exported snapshot. It does not stage or commit changes.
 
 Guide artifacts are excluded from their own review, but remain ordinary files in Git. Add `.agr/` to your Git ignore configuration if you want to keep them local.
 

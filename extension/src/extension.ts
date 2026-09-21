@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { github, parsePullRequest, prComparison, PullRequest, remoteReview, syncFiles } from './githubSync';
+import { focusedDiff } from './focusedDiff';
 import { appendReviewText } from './commentText';
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
@@ -29,6 +30,10 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
   private highlights = new Map<string, vscode.Range[]>();
   private readonly disposables: vscode.Disposable[] = [];
   private readonly githubClient = github;
+  private readonly githubPrompts = new Set<string>();
+  private githubPromptPending = false;
+  private manualGitHubConnection = false;
+  private readonly askGitHubSync = (url: string) => vscode.window.showInformationMessage(`Sync reviewed files to this GitHub PR? ${url}`, 'Enable sync', 'Keep local');
   private githubQueue: Promise<void> = Promise.resolve();
   private readonly githubStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
   private disposed = false;
@@ -47,6 +52,11 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
   private get reviewKey(): string | undefined { return this.root && this.reviewFile ? path.join(this.root, '.agr', this.reviewFile) : undefined; }
   private snapshot?: Snapshot;
   private activeId?: string;
+  private activeItem?: Item;
+  private activeFileKey?: string;
+  private openRequest = 0;
+  private openTransition: Promise<void> = Promise.resolve();
+  private renderedDiff?: string;
   private openedFingerprints = new Map<string, string>();
   readonly view: vscode.TreeView<Item>;
 
@@ -54,6 +64,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     this.view = vscode.window.createTreeView('agr.steps', { treeDataProvider: this, manageCheckboxStateManually: true, showCollapseAll: true });
     this.disposables.push(this.githubStatus, this.view, this.comments, this.decoration, this.changed,
       vscode.workspace.registerTextDocumentContentProvider('agr', this),
+      this.view.onDidChangeVisibility(event => { if (event.visible) void this.offerGitHubSync(); }),
       this.view.onDidChangeCheckboxState(event => {
         for (const [item, state] of event.items) this.runToggle(item, state === vscode.TreeItemCheckboxState.Checked);
       }),
@@ -104,9 +115,10 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
 
   private resetReview(file?: string): void {
     this.githubStatus.hide();
+    this.renderedDiff = undefined;
     this.epoch++; this.generation++;
     this.reviewFile = file; this.guide = undefined; this.snapshot = undefined;
-    this.activeId = undefined; this.items = [];
+    this.activeId = undefined; this.activeItem = undefined; this.activeFileKey = undefined; this.items = [];
     this.openedFingerprints.clear(); this.pendingReviews.clear();
     this.threads.forEach(thread => thread.dispose()); this.threads = [];
     this.highlights.clear(); this.decorate();
@@ -233,6 +245,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
         ? `${reviewed} / ${allSteps(guide).length} reviewed · ${uncovered.length} unguided\n${scopeLabel(snapshot)}${guide.summary ? '\n' + guide.summary : ''}`
         : 'Ask your agent to create .agr/<name>.json using the agr skill.';
       this.changed.fire();
+      if (this.view.visible) void this.offerGitHubSync();
     } catch (error) {
       if (generation !== this.generation) return;
       this.snapshot = undefined;
@@ -269,12 +282,14 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
   private decorate(): void {
     for (const editor of vscode.window.visibleTextEditors) editor.setDecorations(this.decoration, this.highlights.get(editor.document.uri.toString()) ?? []);
   }
-  async open(item?: Item): Promise<void> {
-    if (!item) item = this.items.flatMap(i => i.children).find(i => i.step?.id === this.activeId);
+  async open(item?: Item, fullDiff = false): Promise<void> {
+    if (!item) item = this.activeItem ?? this.items.flatMap(i => i.children).find(i => i.step?.id === this.activeId);
     if (!item || (!item.step && !item.change)) return;
     if (item.reviewFile !== this.reviewKey) throw new Error('The active review changed. Select a step in the current review.');
-    const epoch = this.epoch;
+    const epoch = this.epoch, request = ++this.openRequest;
+    const isCurrent = () => !this.disposed && epoch === this.epoch && request === this.openRequest;
     if (!this.snapshot) await this.refresh();
+    if (!isCurrent()) return;
     if (!this.snapshot || !this.root) throw new Error('Could not read current Git changes.');
     const step = item.step && this.guide ? allSteps(this.guide).find(s => s.id === item!.step!.id) : undefined;
     const ids = step?.changes ?? (item.change ? [item.change.id] : []);
@@ -282,38 +297,51 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     // Opening a step must not wait for every unrelated file to be scanned.
     // Revalidate its files so anchors still refer to the code being displayed.
     const current = await snapshotForGuide(this.root, this.guide, requestedFiles);
-    if (epoch !== this.epoch) return;
+    if (!isCurrent()) return;
     const selected = step ? selectedChanges(step, current) : item.change && current.changes.some(c => c.id === item!.change!.id) ? [item.change] : [];
     if (selected.length !== ids.length || !ids.length || (step && this.guide?.base !== current.base)) {
       throw new Error('This step is out of date. Ask your agent to regenerate the guide; current changes are listed under Unguided changes.');
     }
-    this.activeId = step?.id;
-    if (step) this.openedFingerprints.set(step.id, stepFingerprint(step, current));
-    this.threads.forEach(t => t.dispose()); this.threads = []; this.highlights.clear();
-    // Reverse opening order leaves the first file focused while all related files remain available.
     const files = [...new Map(selected.map(c => [JSON.stringify([c.comparisonId, c.file]), c])).values()];
-    for (const representative of [...files].reverse()) {
-      const file = representative.file;
-      const before = await changeContent(this.root, current, representative, 'original');
-      const after = await changeContent(this.root, current, representative, 'modified');
-      if (epoch !== this.epoch) return;
-      const changes = selected.filter(c => c.file === file && c.comparisonId === representative.comparisonId);
-      if (changes.some(c => c.kind === 'binary')) {
-        void vscode.window.showInformationMessage(`${file}: binary change. Review this file with an appropriate viewer, then mark the step reviewed.`);
-        continue;
-      }
-      const comparison = current.scope?.comparisons.find(c => c.id === representative.comparisonId);
-      const leftLabel = comparison ? `${comparison.id}/${comparison.kind === 'unstaged' ? 'Index' : comparison.base?.slice(0, 8) ?? 'Empty'}` : 'HEAD';
-      const rightLabel = comparison ? `${comparison.id}/${comparison.kind === 'staged' ? 'Index' : comparison.head?.slice(0, 8) ?? 'Working-tree'}` : 'Working-tree';
-      const left = this.virtual(file, leftLabel, before);
-      const right = this.virtual(file, rightLabel, after);
-      const original = changes.filter(c => c.oldLines > 0).map(c => this.range(c.oldStart, c.oldLines, before));
-      const modified = changes.filter(c => c.newLines > 0).map(c => this.range(c.newStart, c.newLines, after));
-      this.highlights.set(left.toString(), original); this.highlights.set(right.toString(), modified);
-      const first = changes[0];
-      const target = first.newLines ? this.range(first.newStart, first.newLines, after) : this.range(first.newStart || 1, 1, after);
-      await vscode.commands.executeCommand('vscode.diff', left, right, `${step?.title ?? 'Unguided change'} — ${path.basename(file)}${comparison ? ` [${comparison.title ?? comparison.id}]` : ''}`, { preview: false, selection: new vscode.Range(target.start, target.start) });
-      if (epoch !== this.epoch) return;
+    const previousFile = fullDiff && item === this.activeItem ? files.find(c => JSON.stringify([c.comparisonId, c.file]) === this.activeFileKey) : undefined;
+    const representative = previousFile ?? (files.length === 1 ? files[0] : (await vscode.window.showQuickPick(
+      files.map(change => ({ label: change.file, description: change.comparisonId, change })),
+      { title: step?.title ?? 'Choose a file to review', placeHolder: 'Choose a file from this review step' }
+    ))?.change);
+    if (!representative || !isCurrent()) return;
+    const file = representative.file;
+    let [before, after] = await Promise.all([changeContent(this.root, current, representative, 'original'), changeContent(this.root, current, representative, 'modified')]);
+    if (!isCurrent()) return;
+    let changes = selected.filter(c => c.file === file && c.comparisonId === representative.comparisonId);
+    if (changes.some(c => c.kind === 'binary')) {
+      void vscode.window.showInformationMessage(`${file}: binary change. Review this file with an appropriate viewer, then mark the step reviewed.`);
+      return;
+    }
+    if (!fullDiff) {
+      const excerpt = focusedDiff(before, after, changes, current.changes.filter(c => c.file === file && c.comparisonId === representative.comparisonId));
+      before = excerpt.before; after = excerpt.after; changes = excerpt.changes;
+    }
+    const comparison = current.scope?.comparisons.find(c => c.id === representative.comparisonId);
+    const leftLabel = comparison ? `${comparison.id}/${comparison.kind === 'unstaged' ? 'Index' : comparison.base?.slice(0, 8) ?? 'Empty'}` : 'HEAD';
+    const rightLabel = comparison ? `${comparison.id}/${comparison.kind === 'staged' ? 'Index' : comparison.head?.slice(0, 8) ?? 'Working-tree'}` : 'Working-tree';
+    const left = this.virtual(file, `${fullDiff ? 'full' : 'focused'}/${leftLabel}`, before);
+    const right = this.virtual(file, `${fullDiff ? 'full' : 'focused'}/${rightLabel}`, after);
+    const original = changes.filter(c => c.oldLines > 0).map(c => this.range(c.oldStart, c.oldLines, before));
+    const modified = changes.filter(c => c.newLines > 0).map(c => this.range(c.newStart, c.newLines, after));
+    const first = changes[0];
+    const target = first.newLines ? this.range(first.newStart, first.newLines, after) : this.range(first.newStart || 1, 1, after);
+    const fingerprint = step ? stepFingerprint(step, current) : undefined;
+    const rendered = JSON.stringify([left.toString(), right.toString(), fingerprint, changes]);
+    const transition = this.openTransition.then(async () => {
+      if (!isCurrent()) return;
+      this.activeId = step?.id; this.activeItem = item;
+      this.activeFileKey = JSON.stringify([representative.comparisonId, representative.file]);
+      if (step && fingerprint) this.openedFingerprints.set(step.id, fingerprint);
+      const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+      if (this.renderedDiff === rendered && input instanceof vscode.TabInputTextDiff && input.original.toString() === left.toString() && input.modified.toString() === right.toString()) return;
+      const oldThreads = this.threads;
+      const oldHighlights = this.highlights;
+      const nextThreads: vscode.CommentThread[] = [];
       if (step) {
         const isDeletion = first.newLines === 0 && first.oldLines > 0;
         const body = new vscode.MarkdownString();
@@ -324,10 +352,29 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
         const thread = this.comments.createCommentThread(isDeletion ? left : right, new vscode.Range(anchor, anchor), [{ body, mode: vscode.CommentMode.Preview, author: { name: 'AGR' } }]);
         thread.label = step.title; thread.canReply = false;
         thread.collapsibleState = vscode.CommentThreadCollapsibleState.Collapsed;
-        this.threads.push(thread);
+        nextThreads.push(thread);
       }
-    }
-    this.decorate();
+      // Prepare annotations before displaying the new editor. Keep the old
+      // view intact during Git reads and dispose its annotations only after switching.
+      this.threads = [...oldThreads, ...nextThreads];
+      this.highlights = new Map(oldHighlights);
+      this.highlights.set(left.toString(), original); this.highlights.set(right.toString(), modified);
+      try {
+        await vscode.commands.executeCommand('vscode.diff', left, right, `${step?.title ?? 'Unguided change'} — ${path.basename(file)} (${fullDiff ? 'full diff' : 'selected changes'})${comparison ? ` [${comparison.title ?? comparison.id}]` : ''}`, { preview: true, selection: new vscode.Range(target.start, target.start) });
+        if (epoch !== this.epoch || this.disposed) { nextThreads.forEach(t => t.dispose()); return; }
+        oldThreads.forEach(t => t.dispose());
+        this.threads = nextThreads;
+        this.highlights = new Map([[left.toString(), original], [right.toString(), modified]]);
+        this.renderedDiff = rendered;
+        this.decorate();
+      } catch (error) {
+        nextThreads.forEach(t => t.dispose());
+        if (epoch === this.epoch && !this.disposed) { this.threads = oldThreads; this.highlights = oldHighlights; this.decorate(); }
+        throw error;
+      }
+    });
+    this.openTransition = transition.catch(() => {});
+    await transition;
   }
 
   runToggle(item?: Item, desired?: boolean): void {
@@ -402,22 +449,67 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     this.queueGitHub(root, file, [...new Set(snapshot.changes.filter(c => step.changes.includes(c.id)).map(c => c.file))]);
   }
   private githubKey(root: string, file: string): string { return `agr.github:${path.join(root, '.agr', file)}`; }
+  private githubChoiceKey(root: string, file: string, url: string): string {
+    return `${this.githubKey(root, file)}:choice:${url.replace(/\/$/, '')}`;
+  }
+  private async offerGitHubSync(): Promise<void> {
+    const root = this.root, file = this.reviewFile, guide = this.guide, epoch = this.epoch;
+    if (!root || !file || !guide?.pullRequestUrl || !this.snapshot || this.disposed || !vscode.workspace.isTrusted || this.githubPromptPending || this.manualGitHubConnection) return;
+    try { prComparison(guide); } catch { return; }
+    const pr = parsePullRequest(guide.pullRequestUrl);
+    const key = this.githubKey(root, file);
+    const choiceKey = this.githubChoiceKey(root, file, guide.pullRequestUrl);
+    const promptKey = JSON.stringify([choiceKey, guide.base]);
+    const binding = this.context.workspaceState.get<{ pr: PullRequest; base: string }>(key);
+    if (binding?.base === guide.base && binding.pr.repo === pr.repo && binding.pr.number === pr.number) return;
+    if (this.context.workspaceState.get(choiceKey) === 'local' || this.githubPrompts.has(promptKey)) return;
+    this.githubPrompts.add(promptKey);
+    this.githubPromptPending = true;
+    try {
+      const action = await this.askGitHubSync(guide.pullRequestUrl);
+      if (this.disposed || epoch !== this.epoch || this.guide?.base !== guide.base || this.guide?.pullRequestUrl !== guide.pullRequestUrl) return;
+      if (action === 'Keep local') {
+        await this.context.workspaceState.update(key, undefined);
+        await this.context.workspaceState.update(choiceKey, 'local');
+      } else if (action === 'Enable sync') await this.enableGitHub(root, file, guide, pr);
+    } catch (error) {
+      void vscode.window.showWarningMessage(`${(error as Error).message} Use AGR: Connect GitHub PR to try again.`);
+    } finally {
+      this.githubPromptPending = false;
+      if (!this.disposed && this.view.visible && epoch !== this.epoch) void this.offerGitHubSync();
+    }
+  }
+  private async enableGitHub(root: string, file: string, guide: Guide, pr: PullRequest): Promise<void> {
+    const epoch = this.epoch;
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Checking GitHub PR…' }, () => remoteReview(this.githubClient(root), pr, guide));
+    if (this.disposed || !vscode.workspace.isTrusted || epoch !== this.epoch || root !== this.root || file !== this.reviewFile || guide.base !== this.guide?.base || guide.pullRequestUrl !== this.guide?.pullRequestUrl) throw new Error('The active review changed. Connect it again.');
+    await this.context.workspaceState.update(this.githubKey(root, file), { pr, base: guide.base });
+    if (guide.pullRequestUrl) await this.context.workspaceState.update(this.githubChoiceKey(root, file, guide.pullRequestUrl), 'enabled');
+    this.queueGitHub(root, file);
+    void vscode.window.showInformationMessage('GitHub sync enabled for this review. Fully reviewed files will be marked Viewed.');
+  }
   async connectGitHub(): Promise<void> {
+    if (this.manualGitHubConnection) return;
+    this.manualGitHubConnection = true;
+    try { await this.connectGitHubOnce(); } finally { this.manualGitHubConnection = false; }
+  }
+  private async connectGitHubOnce(): Promise<void> {
     await this.refresh();
     const root = this.root, file = this.reviewFile, guide = this.guide;
     if (!root || !file || !guide) throw new Error('Open a PR review guide first.');
     prComparison(guide);
-    const url = await vscode.window.showInputBox({ title: 'Connect GitHub PR', prompt: 'Enable AGR → GitHub Viewed sync for this review using your gh login.', placeHolder: 'https://github.com/owner/repo/pull/123', ignoreFocusOut: true });
+    const url = await vscode.window.showInputBox({ title: 'Connect GitHub PR', prompt: 'Enable AGR → GitHub Viewed sync for this review using your gh login.', value: guide.pullRequestUrl, placeHolder: 'https://github.com/owner/repo/pull/123', ignoreFocusOut: true });
     if (!url) return;
     const pr = parsePullRequest(url);
-    await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Checking GitHub PR…' }, () => remoteReview(this.githubClient(root), pr, guide));
-    if (root !== this.root || file !== this.reviewFile || guide.base !== this.guide?.base) throw new Error('The active review changed. Connect it again.');
-    await this.context.workspaceState.update(this.githubKey(root, file), { pr, base: guide.base });
-    this.queueGitHub(root, file);
-    void vscode.window.showInformationMessage('GitHub sync enabled for this review. Fully reviewed files will be marked Viewed.');
+    if (guide.pullRequestUrl && JSON.stringify(pr) !== JSON.stringify(parsePullRequest(guide.pullRequestUrl))) throw new Error('This URL differs from the guide’s PR. Update the guide’s pullRequestUrl first.');
+    if (root !== this.root || file !== this.reviewFile || guide.base !== this.guide?.base || guide.pullRequestUrl !== this.guide?.pullRequestUrl) throw new Error('The active review changed. Connect it again.');
+    await this.enableGitHub(root, file, guide, pr);
   }
   async disconnectGitHub(): Promise<void> {
-    if (this.root && this.reviewFile) await this.context.workspaceState.update(this.githubKey(this.root, this.reviewFile), undefined);
+    if (this.root && this.reviewFile) {
+      await this.context.workspaceState.update(this.githubKey(this.root, this.reviewFile), undefined);
+      if (this.guide?.pullRequestUrl) await this.context.workspaceState.update(this.githubChoiceKey(this.root, this.reviewFile, this.guide.pullRequestUrl), 'local');
+    }
     this.githubStatus.hide();
     void vscode.window.showInformationMessage('GitHub sync disconnected. Existing GitHub Viewed flags are unchanged.');
   }
@@ -440,6 +532,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
       const read = async () => Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
       const text = await read();
       const guide = parseGuide(text);
+      if (guide.pullRequestUrl && JSON.stringify(parsePullRequest(guide.pullRequestUrl)) !== JSON.stringify(binding.pr)) throw new Error('The guide now references a different PR. Connect that PR before syncing.');
       if (guide.base !== binding.base) throw new Error('This guide changed its comparison. Reconnect the PR to enable sync again.');
       const snapshot = await snapshotForGuide(root, guide);
       await syncFiles(this.githubClient(root), binding.pr, guide, snapshot, affected, async () => {
@@ -506,6 +599,7 @@ export async function activate(context: vscode.ExtensionContext) {
   command('selectReview', () => app.selectReview());
   command('selectRepository', () => app.selectRepository());
   command('open', item => vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Opening review step…' }, () => app.open(item)));
+  command('openFullDiff', item => app.open(item, true));
   command('toggle', item => app.toggle(item));
   command('next', () => app.navigate(1));
   command('previous', () => app.navigate(-1));
