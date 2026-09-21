@@ -22,6 +22,16 @@ Click a sidebar step to open a native diff. Some steps reference multiple files.
 
 Use **AGR: Switch Review** to choose among `.agr/*.json` files. The picker shows scope, progress, and stale or unavailable status. Selection is remembered per repository. Use **AGR: Open Guide File** to inspect or edit the JSON. Changing a step's explanation invalidates its previous review. Use **AGR: Select Repository** when several Git roots are open.
 
+## Optional GitHub Viewed sync
+
+For a guide covering one complete PR comparison, run **AGR: Connect GitHub PR** and enter its `https://github.com/OWNER/REPO/pull/NUMBER` URL. Install GitHub CLI and run `gh auth login` first. AGR uses that account to update GitHub's **Viewed** checkboxes. Connecting is optional and remembered for this review in VS Code workspace storage, outside the shared guide.
+
+AGR checks the current PR head and merge base against the guide's pinned commits. A file is marked Viewed only when every changed range on both sides is covered and every associated step, including optional steps, has a current reviewed fingerprint. Renames require both the old and new paths to be covered. Unchecking a step clears Viewed on its affected files. Connecting an existing guide marks complete files but does not clear other Viewed flags.
+
+Progress saves locally first. GitHub requests run in the background, with status in the status bar. A failed request offers **Retry** and leaves local progress intact. **AGR: Disconnect GitHub PR** stops future sync without changing existing GitHub flags. A request already sent may still finish. GitHub status is not imported into AGR, and no approval, review comment, or PR submission is created.
+
+The first version supports github.com PRs with one pinned revisions comparison and no path filters. Mixed scopes, branch-only reviews, staged edits, and unstaged edits stay local unless explicitly connected to a matching PR comparison. Changed PR commits or merge bases require an updated guide and reconnection. AGR checks the remote immediately before each update, but GitHub's Viewed mutation offers no atomic commit precondition. AGR does not fetch commits or poll the PR. Retry actions are available during the current VS Code session; reconnect to reconcile fully reviewed files after restarting.
+
 ## Skill installation location
 
 **AGR: Install Agent Skills** asks whether to install **Globally** or in **This repository**. Global installation works without an open project and writes to `~/.agents/skills/agr/` for Codex and `~/.claude/skills/agr/` for Claude Code. If `CLAUDE_CONFIG_DIR` is set in VS Code’s environment, its directory replaces `~/.claude`. Repository installation writes both skill folders under the selected Git root. Canceling the prompt writes nothing.

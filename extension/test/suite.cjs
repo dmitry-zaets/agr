@@ -97,6 +97,39 @@ exports.run = async function () {
   await app.open(app.getState().items[0].children[0]);
   assert.ok(vscode.window.visibleTextEditors.some(e => e.document.uri.path === `/history/${committed.slice(0, 8)}/feature.ts` && e.document.getText().includes('first = 100;')), 'committed review ignores unrelated dirty worktree bytes');
 
+  // Fake the transport only: exercise saved progress, queueing and disconnection
+  // through the real extension without mutating a user's GitHub account.
+  const commands = await vscode.commands.getCommands();
+  assert.ok(commands.includes('agr.connectGitHub'));
+  assert.ok(commands.includes('agr.disconnectGitHub'));
+  const syncKey = app.githubKey(root, 'fixture.json');
+  await app.context.workspaceState.update(syncKey, { pr: { repo: 'test/repo', number: 1 }, base: app.getState().guide.base });
+  let releaseRequest;
+  let gate = new Promise(resolve => { releaseRequest = resolve; });
+  const mutations = [];
+  app.githubClient = () => async args => {
+    await gate;
+    if (args.includes('graphql')) { mutations.push(args.join(' ')); return {}; }
+    if (args.includes('--paginate')) return [[{ filename: 'feature.ts', status: 'modified' }]];
+    if (args[1].includes('/compare/')) return { merge_base_commit: { sha: baseCommit } };
+    return { state: 'open', node_id: 'fake-pr', head: { sha: committed }, base: { sha: baseCommit }, changed_files: 1 };
+  };
+  await app.toggle(app.getState().items[0].children[0], true);
+  assert.equal(app.getState().items[0].children[0].checkboxState, vscode.TreeItemCheckboxState.Checked, 'local save completes while GitHub is blocked');
+  assert.equal(mutations.length, 0);
+  releaseRequest(); await app.githubQueue;
+  assert.match(mutations[0], /\{ markFileAsViewed/);
+  await Promise.all([app.toggle(app.getState().items[0].children[0], false), app.toggle(app.getState().items[0].children[0], true)]);
+  // Superseded jobs may enqueue a fresh read behind the current tail.
+  for (let tail; tail !== app.githubQueue;) { tail = app.githubQueue; await tail; }
+  assert.match(mutations.at(-1), /\{ markFileAsViewed/, 'rapid toggles end at the latest saved state');
+  gate = new Promise(resolve => { releaseRequest = resolve; });
+  await app.toggle(app.getState().items[0].children[0], false);
+  await app.disconnectGitHub();
+  const beforeDisconnect = mutations.length;
+  releaseRequest(); await app.githubQueue;
+  assert.equal(mutations.length, beforeDisconnect, 'disconnect cancels queued writes');
+
   // Two guides deliberately share step IDs: identity and writes must stay isolated.
   const firstFile = path.join(root, '.agr', 'fixture.json');
   const firstBefore = await fs.readFile(firstFile, 'utf8');

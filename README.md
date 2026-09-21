@@ -50,7 +50,7 @@ You can limit the scope to files or directories, or let the agent choose and exp
 - Visible **Unguided changes** for changes within the declared scope that the guide has not covered.
 - A portable JSON guide and schema, with no AGR account or model API key.
 
-AGR itself makes no network requests and collects no telemetry. Guide generation runs through your chosen agent under its own settings. See [usage and troubleshooting](docs/usage.md) and [scope, coverage, and progress behavior](docs/review-model.md).
+AGR collects no telemetry. Reviews work locally by default. Optional **AGR: Connect GitHub PR** syncs fully reviewed files to GitHub’s Viewed checkboxes using your existing `gh` login. Guide generation runs through your chosen agent under its own settings. See [usage and troubleshooting](docs/usage.md) and [scope, coverage, and progress behavior](docs/review-model.md).
 
 ## Review files in 1.1
 

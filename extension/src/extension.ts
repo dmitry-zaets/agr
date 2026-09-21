@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { github, parsePullRequest, prComparison, PullRequest, remoteReview, syncFiles } from './githubSync';
 import { appendReviewText } from './commentText';
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
@@ -27,6 +28,10 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
   private threads: vscode.CommentThread[] = [];
   private highlights = new Map<string, vscode.Range[]>();
   private readonly disposables: vscode.Disposable[] = [];
+  private readonly githubClient = github;
+  private githubQueue: Promise<void> = Promise.resolve();
+  private readonly githubStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
+  private disposed = false;
   private timer?: ReturnType<typeof setTimeout>;
   private generation = 0;
   private refreshing?: Promise<void>;
@@ -47,7 +52,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
 
   constructor(private context: vscode.ExtensionContext) {
     this.view = vscode.window.createTreeView('agr.steps', { treeDataProvider: this, manageCheckboxStateManually: true, showCollapseAll: true });
-    this.disposables.push(this.view, this.comments, this.decoration, this.changed,
+    this.disposables.push(this.githubStatus, this.view, this.comments, this.decoration, this.changed,
       vscode.workspace.registerTextDocumentContentProvider('agr', this),
       this.view.onDidChangeCheckboxState(event => {
         for (const [item, state] of event.items) this.runToggle(item, state === vscode.TreeItemCheckboxState.Checked);
@@ -63,7 +68,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     };
     this.disposables.push(watcher, watcher.onDidChange(observe), watcher.onDidCreate(observe), watcher.onDidDelete(observe));
   }
-  dispose(): void { if (this.timer) clearTimeout(this.timer); this.threads.forEach(t => t.dispose()); this.disposables.forEach(d => d.dispose()); }
+  dispose(): void { this.disposed = true; if (this.timer) clearTimeout(this.timer); this.threads.forEach(t => t.dispose()); this.disposables.forEach(d => d.dispose()); }
   provideTextDocumentContent(uri: vscode.Uri): string { return this.documents.get(uri.toString()) ?? ''; }
   getTreeItem(item: Item): vscode.TreeItem {
     const pending = item.step && this.pendingReviews.get(item.step.id);
@@ -98,6 +103,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
   }
 
   private resetReview(file?: string): void {
+    this.githubStatus.hide();
     this.epoch++; this.generation++;
     this.reviewFile = file; this.guide = undefined; this.snapshot = undefined;
     this.activeId = undefined; this.items = [];
@@ -393,6 +399,63 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     }
     this.changed.fire();
     this.schedule();
+    this.queueGitHub(root, file, [...new Set(snapshot.changes.filter(c => step.changes.includes(c.id)).map(c => c.file))]);
+  }
+  private githubKey(root: string, file: string): string { return `agr.github:${path.join(root, '.agr', file)}`; }
+  async connectGitHub(): Promise<void> {
+    await this.refresh();
+    const root = this.root, file = this.reviewFile, guide = this.guide;
+    if (!root || !file || !guide) throw new Error('Open a PR review guide first.');
+    prComparison(guide);
+    const url = await vscode.window.showInputBox({ title: 'Connect GitHub PR', prompt: 'Enable AGR → GitHub Viewed sync for this review using your gh login.', placeHolder: 'https://github.com/owner/repo/pull/123', ignoreFocusOut: true });
+    if (!url) return;
+    const pr = parsePullRequest(url);
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Checking GitHub PR…' }, () => remoteReview(this.githubClient(root), pr, guide));
+    if (root !== this.root || file !== this.reviewFile || guide.base !== this.guide?.base) throw new Error('The active review changed. Connect it again.');
+    await this.context.workspaceState.update(this.githubKey(root, file), { pr, base: guide.base });
+    this.queueGitHub(root, file);
+    void vscode.window.showInformationMessage('GitHub sync enabled for this review. Fully reviewed files will be marked Viewed.');
+  }
+  async disconnectGitHub(): Promise<void> {
+    if (this.root && this.reviewFile) await this.context.workspaceState.update(this.githubKey(this.root, this.reviewFile), undefined);
+    this.githubStatus.hide();
+    void vscode.window.showInformationMessage('GitHub sync disconnected. Existing GitHub Viewed flags are unchanged.');
+  }
+  private queueGitHub(root: string, file: string, affected?: string[]): void {
+    const key = this.githubKey(root, file);
+    const binding = this.context.workspaceState.get<{ pr: PullRequest; base: string }>(key);
+    if (!binding) return;
+    const bindingText = JSON.stringify(binding);
+    const connected = () => !this.disposed && vscode.workspace.isTrusted && JSON.stringify(this.context.workspaceState.get(key)) === bindingText;
+    const showStatus = (text: string) => {
+      if (this.root !== root || this.reviewFile !== file || !connected()) return;
+      this.githubStatus.text = text;
+      this.githubStatus.tooltip = `AGR → ${binding.pr.repo}#${binding.pr.number}`;
+      this.githubStatus.show();
+    };
+    this.githubQueue = this.githubQueue.then(async () => {
+      if (!connected()) return;
+      showStatus('$(sync~spin) AGR: Syncing GitHub');
+      const uri = vscode.Uri.file(await reviewPath(root, file));
+      const read = async () => Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+      const text = await read();
+      const guide = parseGuide(text);
+      if (guide.base !== binding.base) throw new Error('This guide changed its comparison. Reconnect the PR to enable sync again.');
+      const snapshot = await snapshotForGuide(root, guide);
+      await syncFiles(this.githubClient(root), binding.pr, guide, snapshot, affected, async () => {
+        if (!connected()) return false;
+        if (await read() !== text) throw new Error('AGR_SYNC_SUPERSEDED');
+        return true;
+      });
+      showStatus('$(github) AGR: GitHub synced');
+    }).catch(error => {
+      if (!connected()) return;
+      if ((error as Error).message === 'AGR_SYNC_SUPERSEDED') { this.queueGitHub(root, file, affected); return; }
+      showStatus('$(warning) AGR: GitHub sync failed');
+      void vscode.window.showWarningMessage(`AGR progress is saved locally. ${(error as Error).message}`, 'Retry').then(action => {
+        if (action === 'Retry' && connected()) this.queueGitHub(root, file, affected);
+      });
+    });
   }
   async navigate(direction: number): Promise<void> {
     const steps = this.items.flatMap(i => i.children).filter(i => i.step);
@@ -448,6 +511,8 @@ export async function activate(context: vscode.ExtensionContext) {
   command('previous', () => app.navigate(-1));
   command('edit', () => app.edit());
   command('snapshot', () => app.exportSnapshot());
+  command('connectGitHub', () => app.connectGitHub());
+  command('disconnectGitHub', () => app.disconnectGitHub());
   command('installSkill', () => app.installSkill());
   // Git events cover index/HEAD changes that do not touch working files.
   const extension = vscode.extensions.getExtension('vscode.git');

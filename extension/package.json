@@ -100,6 +100,16 @@
         "title": "Switch Review",
         "category": "AGR",
         "icon": "$(list-selection)"
+      },
+      {
+        "command": "agr.connectGitHub",
+        "title": "Connect GitHub PR",
+        "category": "AGR"
+      },
+      {
+        "command": "agr.disconnectGitHub",
+        "title": "Disconnect GitHub PR",
+        "category": "AGR"
       }
     ],
     "menus": {
@@ -133,6 +143,16 @@
           "command": "agr.selectRepository",
           "when": "view == agr.steps",
           "group": "guide"
+        },
+        {
+          "command": "agr.connectGitHub",
+          "when": "view == agr.steps",
+          "group": "github"
+        },
+        {
+          "command": "agr.disconnectGitHub",
+          "when": "view == agr.steps",
+          "group": "github"
         }
       ],
       "view/item/context": [

@@ -42,7 +42,7 @@ Search for **AGR** in the Command Palette to install skills, export a change sna
 
 ## Privacy and local files
 
-AGR makes no network requests, collects no telemetry, and requires no model API key. Your chosen agent handles generation under its own settings and credentials. AGR writes guide progress and, when requested, skill files or an exported snapshot. It does not stage or commit changes.
+AGR works locally by default, collects no telemetry, and requires no model API key. Optional **AGR: Connect GitHub PR** uses your `gh` login to sync fully reviewed files to GitHub’s Viewed checkboxes. Local progress saves before background sync; failures offer Retry. **AGR: Disconnect GitHub PR** disables sync. The first version supports one complete, pinned github.com PR comparison. Your chosen agent handles generation under its own settings and credentials. AGR writes guide progress and, when requested, skill files or an exported snapshot. It does not stage or commit changes.
 
 Guide artifacts are excluded from their own review, but remain ordinary files in Git. Add `.agr/` to your Git ignore configuration if you want to keep them local.
 
