@@ -18,7 +18,7 @@ The agent can organize steps around concerns instead of file names. Each step in
 
 ## Review and navigation
 
-Click a sidebar step to open a native diff. Some steps reference multiple files. Notes appear as native comments, with markers on the relevant ranges. Check the step when finished; progress is stored in the guide. **Next Step** and **Previous Step** follow the guide's order.
+Click a sidebar step to open a native diff. Some steps reference multiple files. Notes start collapsed, with comment icons on the relevant lines. Click a comment icon to open the explanation. Check the step when finished; progress is stored in the guide. **Next Step** and **Previous Step** follow the guide's order.
 
 Use **AGR: Switch Review** to choose among `.agr/*.json` files. The picker shows scope, progress, and stale or unavailable status. Selection is remembered per repository. Use **AGR: Open Guide File** to inspect or edit the JSON. Changing a step's explanation invalidates its previous review. Use **AGR: Select Repository** when several Git roots are open.
 

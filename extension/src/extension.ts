@@ -323,7 +323,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
         const anchor = isDeletion ? original[0].start : target.start;
         const thread = this.comments.createCommentThread(isDeletion ? left : right, new vscode.Range(anchor, anchor), [{ body, mode: vscode.CommentMode.Preview, author: { name: 'AGR' } }]);
         thread.label = step.title; thread.canReply = false;
-        thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+        thread.collapsibleState = vscode.CommentThreadCollapsibleState.Collapsed;
         this.threads.push(thread);
       }
     }
