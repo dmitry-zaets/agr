@@ -1,10 +1,13 @@
 import * as vscode from 'vscode';
 
-/** Escape untrusted guide text while allowing the comment panel to wrap it. */
+/** Escape untrusted guide prose, letting the panel wrap each paragraph. */
 export function appendReviewText(markdown: vscode.MarkdownString, text: string): vscode.MarkdownString {
-  const escaped = new vscode.MarkdownString().appendText(text);
-  // appendText encodes ordinary spaces as non-breaking HTML entities. Preserve
-  // its Markdown escaping and line breaks, but let prose wrap at word boundaries.
-  markdown.appendMarkdown(escaped.value.replace(/&nbsp;/g, ' '));
+  // Escape paragraphs separately: appendText turns each newline into a paragraph
+  // break. Authored single newlines are only wrapping hints, not blank lines.
+  const paragraphs = text.replace(/\r\n?/g, '\n').split(/\n[ \t]*\n(?:[ \t]*\n)*/);
+  markdown.appendMarkdown(paragraphs.map(paragraph => {
+    const prose = paragraph.replace(/[ \t]*\n[ \t]*/g, ' ');
+    return new vscode.MarkdownString().appendText(prose).value.replace(/&nbsp;/g, ' ');
+  }).join('\n\n'));
   return markdown;
 }

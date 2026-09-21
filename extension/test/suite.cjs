@@ -15,7 +15,8 @@ exports.run = async function () {
 
   let step = app.getState().items[0].children[0];
   assert.ok(!step.tooltip.value.includes('&nbsp;'), 'prose has normal spaces so comments can wrap');
-  assert.ok(step.tooltip.value.includes('\n'), 'authored line breaks are preserved');
+  assert.ok(step.tooltip.value.includes('concern. Keep'), 'single authored newlines wrap within a paragraph');
+  assert.ok(step.tooltip.value.includes('\n\nCheck:'), 'focus retains a separate paragraph');
   assert.ok(step.tooltip.value.includes('\\[links\\]'), 'guide text remains escaped rather than becoming an executable Markdown link');
   assert.ok(!step.tooltip.isTrusted, 'guide text does not enable trusted commands');
   await vscode.commands.executeCommand(step.command.command, ...step.command.arguments);
