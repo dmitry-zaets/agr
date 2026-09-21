@@ -116,6 +116,11 @@
         "title": "Open Full Diff",
         "category": "AGR",
         "icon": "$(go-to-file)"
+      },
+      {
+        "command": "agr.updateSkills",
+        "title": "Update Agent Skills",
+        "category": "AGR"
       }
     ],
     "menus": {

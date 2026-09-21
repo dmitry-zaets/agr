@@ -42,7 +42,9 @@ Existing skills are not overwritten. Preserve customizations and move existing c
 
 ## Updating skills
 
-The install command intentionally skips existing skill directories. To upgrade, preserve any local customizations, replace `.claude/skills/agr/` and `.agents/skills/agr/` with the release's `skills/agr/` folder, then start a fresh agent session. Alternatively, move the old directories outside the skill discovery folders and run the install command again. Avoid leaving old copies discoverable under another folder name.
+When AGR starts with updated bundled skills, it checks global copies and copies in the selected repository. If their content differs, it offers **Update Skills** or **Not Now**, once per bundled skill revision and location. Extension updates with unchanged skills do not prompt again. Missing copies are left for **AGR: Install Agent Skills**.
+
+Run **AGR: Update Agent Skills** at any time to check again. Choose which installed copies to replace. AGR backs up each whole folder under `agr-skill-backups/update-*/previous` next to the `skills/` directory, then installs the current bundle. Backups are outside skill discovery. Preserve or reapply your customizations from those backups. Linked skill directories need manual updates. Start a fresh agent session afterward.
 
 Keep `SKILL.md`, `scopes.md`, `guide.schema.json`, and `scripts/agr.cjs` together. The helper is bundled and needs no `npm install` in the target repository.
 

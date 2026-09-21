@@ -63,3 +63,5 @@ Existing skills are not overwritten. Preserve customizations and move existing c
 If no review appears, check that the guide is saved directly inside `.agr/` in the selected Git repository root. Use **AGR: Refresh** after generating it. For stale steps, regenerate the guide against the latest changes.
 
 [Usage and troubleshooting](https://github.com/dmitry-zaets/agr/blob/main/docs/usage.md) · [Source and issues](https://github.com/dmitry-zaets/agr) · [MIT license](https://github.com/dmitry-zaets/agr/blob/main/LICENSE)
+
+AGR offers to update existing agent skills when the bundled skill content changes. Use **AGR: Update Agent Skills** to check manually. Choose the copies to update; the original folders are backed up outside the skill-discovery directories.

@@ -5,6 +5,7 @@ import { appendReviewText } from './commentText';
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { outdatedSkills, updateInstalledSkills } from './skillUpdate';
 import { installSkills, skillTargets, InstallScope } from './skillInstall';
 import { allSteps, Change, Guide, hash, parseGuide, selectedChanges, Snapshot, Step, stepFingerprint, splitFileSteps, stepState, uncoveredChanges } from '../../packages/core/src/model';
 import { git, repositoryRoot } from '../../packages/core/src/git';
@@ -38,6 +39,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
   private githubQueue: Promise<void> = Promise.resolve();
   private readonly githubStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
   private disposed = false;
+  private skillUpdatePending = false;
   private timer?: ReturnType<typeof setTimeout>;
   private generation = 0;
   private refreshing?: Promise<void>;
@@ -625,6 +627,40 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     await installSkills(this.context.asAbsolutePath('dist/skill'), targets);
     void vscode.window.showInformationMessage(`Installed AGR skills ${scope === 'global' ? 'globally' : 'in this repository'}: ${targets.join(' and ')}. Start a fresh agent session to use them.`);
   }
+  private installedSkillTargets(): string[] {
+    return [...skillTargets('global', undefined, homedir(), process.env.CLAUDE_CONFIG_DIR),
+      ...(this.root ? skillTargets('repository', this.root, homedir()) : [])];
+  }
+  async offerSkillUpdates(manual = false): Promise<void> {
+    if (this.disposed || this.skillUpdatePending || !vscode.workspace.isTrusted) return;
+    this.skillUpdatePending = true;
+    try {
+      const source = this.context.asAbsolutePath('dist/skill');
+      const { digest, updates, skipped } = await outdatedSkills(source, this.installedSkillTargets());
+      if (this.disposed) return;
+      if (manual && skipped.length) void vscode.window.showWarningMessage(skipped.join('\n'));
+      const unseen = updates.filter(u => this.context.globalState.get(`agr.skillNotice:${u.target}`) !== digest);
+      if (!manual && !unseen.length) return;
+      if (!updates.length) {
+        if (manual) void vscode.window.showInformationMessage('No outdated AGR skills found. Use AGR: Install Agent Skills to add missing copies.');
+        return;
+      }
+      if (!manual) {
+        for (const update of unseen) await this.context.globalState.update(`agr.skillNotice:${update.target}`, digest);
+        const action = await vscode.window.showInformationMessage('AGR includes updated agent skills. Update your installed copies for the current review format?', 'Update Skills', 'Not Now');
+        if (action !== 'Update Skills' || this.disposed) return;
+      }
+      const selected = await vscode.window.showQuickPick(updates.map(update => ({
+        label: update.target, picked: true, update,
+        description: 'The existing folder will be backed up before replacement.'
+      })), { canPickMany: true, title: 'Update AGR skills', placeHolder: 'Select installed copies to replace. Customizations are preserved in backups.' });
+      if (!selected?.length || this.disposed || !vscode.workspace.isTrusted) return;
+      const backups = await updateInstalledSkills(source, selected.map(s => s.update));
+      void vscode.window.showInformationMessage(`Updated ${selected.length} AGR skill copies. Start a fresh agent session. Backups: ${backups.join(', ')}`);
+    } catch (error) {
+      void vscode.window.showErrorMessage(`AGR skill update: ${(error as Error).message}`);
+    } finally { this.skillUpdatePending = false; }
+  }
   getState(): { guide?: Guide; snapshot?: Snapshot; items: Item[]; reviewFile?: string; reviews: ReviewFile[] } { return { guide: this.guide, snapshot: this.snapshot, items: this.items, reviewFile: this.reviewFile, reviews: this.reviews }; }
 }
 
@@ -647,6 +683,7 @@ export async function activate(context: vscode.ExtensionContext) {
   command('connectGitHub', () => app.connectGitHub());
   command('disconnectGitHub', () => app.disconnectGitHub());
   command('installSkill', () => app.installSkill());
+  command('updateSkills', () => app.offerSkillUpdates(true));
   // Git events cover index/HEAD changes that do not touch working files.
   const extension = vscode.extensions.getExtension('vscode.git');
   if (extension) {
@@ -656,5 +693,6 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(api.onDidOpenRepository(observe));
   }
   await app.refresh();
+  if (context.extensionMode !== vscode.ExtensionMode.Test) void app.offerSkillUpdates();
   return app;
 }
