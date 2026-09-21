@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import { github, OutdatedReviewError, parsePullRequest, prComparison, PullRequest, remoteReview, syncFiles } from './githubSync';
-import { focusedDiff } from './focusedDiff';
 import { appendReviewText } from './commentText';
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
@@ -307,7 +306,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
   private decorate(): void {
     for (const editor of vscode.window.visibleTextEditors) editor.setDecorations(this.decoration, this.highlights.get(editor.document.uri.toString()) ?? []);
   }
-  async open(item?: Item, fullDiff = false): Promise<void> {
+  async open(item?: Item): Promise<void> {
     if (!item) item = this.activeItem ?? this.items.flatMap(i => i.children).find(i => i.step?.id === this.activeId);
     if (!item || (!item.step && !item.change)) return;
     if (item.reviewFile !== this.reviewKey) throw new Error('The active review changed. Select a step in the current review.');
@@ -332,22 +331,18 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     const representative = files[0];
     if (!isCurrent()) return;
     const file = representative.file;
-    let [before, after] = await Promise.all([changeContent(this.root, current, representative, 'original'), changeContent(this.root, current, representative, 'modified')]);
+    const [before, after] = await Promise.all([changeContent(this.root, current, representative, 'original'), changeContent(this.root, current, representative, 'modified')]);
     if (!isCurrent()) return;
-    let changes = selected.filter(c => c.file === file && c.comparisonId === representative.comparisonId);
+    const changes = selected.filter(c => c.file === file && c.comparisonId === representative.comparisonId);
     if (changes.some(c => c.kind === 'binary')) {
       void vscode.window.showInformationMessage(`${file}: binary change. Review this file with an appropriate viewer, then mark the step reviewed.`);
       return;
     }
-    if (!fullDiff) {
-      const excerpt = focusedDiff(before, after, changes, current.changes.filter(c => c.file === file && c.comparisonId === representative.comparisonId));
-      before = excerpt.before; after = excerpt.after; changes = excerpt.changes;
-    }
     const comparison = current.scope?.comparisons.find(c => c.id === representative.comparisonId);
     const leftLabel = comparison ? `${comparison.id}/${comparison.kind === 'unstaged' ? 'Index' : comparison.base?.slice(0, 8) ?? 'Empty'}` : 'HEAD';
     const rightLabel = comparison ? `${comparison.id}/${comparison.kind === 'staged' ? 'Index' : comparison.head?.slice(0, 8) ?? 'Working-tree'}` : 'Working-tree';
-    const left = this.virtual(file, `${fullDiff ? 'full' : 'focused'}/${leftLabel}`, before);
-    const right = this.virtual(file, `${fullDiff ? 'full' : 'focused'}/${rightLabel}`, after);
+    const left = this.virtual(file, `full/${leftLabel}`, before);
+    const right = this.virtual(file, `full/${rightLabel}`, after);
     const original = changes.filter(c => c.oldLines > 0).map(c => this.range(c.oldStart, c.oldLines, before));
     const modified = changes.filter(c => c.newLines > 0).map(c => this.range(c.newStart, c.newLines, after));
     const first = changes[0];
@@ -381,7 +376,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
       this.highlights = new Map(oldHighlights);
       this.highlights.set(left.toString(), original); this.highlights.set(right.toString(), modified);
       try {
-        await vscode.commands.executeCommand('vscode.diff', left, right, `${step?.title ?? 'Unguided change'} — ${path.basename(file)} (${fullDiff ? 'full diff' : 'selected changes'})${comparison ? ` [${comparison.title ?? comparison.id}]` : ''}`, { preview: true, selection: new vscode.Range(target.start, target.start) });
+        await vscode.commands.executeCommand('vscode.diff', left, right, `${step?.title ?? 'Unguided change'} — ${path.basename(file)} (full diff)${comparison ? ` [${comparison.title ?? comparison.id}]` : ''}`, { preview: true, selection: new vscode.Range(target.start, target.start) });
         if (epoch !== this.epoch || this.disposed) { nextThreads.forEach(t => t.dispose()); return; }
         oldThreads.forEach(t => t.dispose());
         this.threads = nextThreads;
@@ -674,7 +669,6 @@ export async function activate(context: vscode.ExtensionContext) {
   command('selectReview', () => app.selectReview());
   command('selectRepository', () => app.selectRepository());
   command('open', item => vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Opening review step…' }, () => app.open(item)));
-  command('openFullDiff', item => app.open(item, true));
   command('toggle', item => app.toggle(item));
   command('next', () => app.navigate(1));
   command('previous', () => app.navigate(-1));

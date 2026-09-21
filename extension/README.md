@@ -32,7 +32,7 @@ Give your agent a PR link, branch name, or description of what you want reviewed
 
 ## Progress that follows the changes
 
-A file can appear in multiple steps, each showing only its selected changes with a few unchanged context lines. Excerpt headers show the source line ranges. Use **AGR: Open Full Diff** for the complete file comparison. Your notes and review progress are saved in `.agr/<name>.json`. Changed code, notes, or comparison baselines can require another review. Uncovered changes within the guide's scope appear under **Unguided changes**.
+A file can appear in multiple steps. Each opens the complete native file diff at its relevant lines, while highlighting and review progress remain scoped to that step. Your notes and review progress are saved in `.agr/<name>.json`. Changed code, notes, or comparison baselines can require another review. Uncovered changes within the guide's scope appear under **Unguided changes**.
 
 PR and branch reviews pin their commits. Ask the agent to regenerate the guide after remote updates. Default local comparisons follow HEAD. Diffs show saved snapshots; reopen a step to see newer saved edits. Unsaved buffers are excluded. Binary changes are listed for inspection in another viewer.
 
