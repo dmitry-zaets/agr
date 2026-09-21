@@ -74,3 +74,20 @@ test('CLI validates a selected review independently or reports all review failur
   const outside = spawnSync(process.execPath, [...args, '../agr.json'], { encoding: 'utf8' });
   assert.equal(outside.status, 1);
 });
+
+test('CLI rejects steps spanning files and accepts their split replacement', async t => {
+  const root = await fixture(t);
+  await writeFile(path.join(root, 'file.ts'), 'changed\n');
+  await writeFile(path.join(root, 'second.ts'), 'added\n');
+  const snapshot = await snapshotRepository(root);
+  const { splitFileSteps } = await import('../src/model');
+  const multi = { ...guide, base: snapshot.base, groups: [{ id: 'group', title: 'Group', steps: [{ id: 'both', title: 'Both files', note: 'Review both', changes: snapshot.changes.map(c => c.id) }] }] };
+  const file = path.join(root, '.agr', 'multi.json');
+  await writeFile(file, JSON.stringify(multi));
+  const args = ['--import', 'tsx', path.resolve('packages/core/src/cli.ts'), 'validate', root, 'multi.json'];
+  const invalid = spawnSync(process.execPath, args, { encoding: 'utf8' });
+  assert.equal(invalid.status, 1);
+  assert.deepEqual(JSON.parse(invalid.stdout).reviews[0].multiFileSteps, ['both']);
+  await writeFile(file, JSON.stringify(splitFileSteps(multi as import('../src/model').Guide, snapshot)));
+  assert.equal(spawnSync(process.execPath, args, { encoding: 'utf8' }).status, 0);
+});

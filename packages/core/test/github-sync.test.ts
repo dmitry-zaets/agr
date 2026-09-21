@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Guide, Snapshot, Step, stepFingerprint, parseGuide } from '../src/model';
-import { fileReviewed, parsePullRequest, prComparison, remoteReview, syncFiles, Gh } from '../../../extension/src/githubSync';
+import { fileReviewed, parsePullRequest, prComparison, remoteReview, syncFiles, Gh, OutdatedReviewError } from '../../../extension/src/githubSync';
 
 function fixture() {
   const snapshot: Snapshot = { version: 1, root: '/repo', base: 'scope', comparison: 'scoped', changes: [{ id: 'change', file: 'file.ts', kind: 'text', oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, patch: '' }] };
@@ -93,4 +93,16 @@ test('PR metadata is optional and validated without enabling sync', () => {
   for (const value of [null, {}, 'https://evil.test/a/b/pull/1', 'https://github.com/a/b/pull/0', 'https://github.com/a/b/pull/999999999999999999999']) {
     assert.throws(() => parseGuide(JSON.stringify({ ...guide, pullRequestUrl: value })), /pullRequestUrl/);
   }
+});
+
+test('outdated PR errors identify both revisions and explain how to recover', async () => {
+  const { guide } = fixture();
+  await assert.rejects(remoteReview(mock('d'.repeat(40)).gh, pr, guide), error => {
+    assert.ok(error instanceof OutdatedReviewError);
+    assert.match(error.message, /Guide commit: bbbbbbbb/);
+    assert.match(error.message, /Current PR commit: dddddddd/);
+    assert.match(error.message, /refresh the guide/);
+    assert.deepEqual(error.pr, pr);
+    return true;
+  });
 });

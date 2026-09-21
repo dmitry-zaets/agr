@@ -142,6 +142,7 @@ function validateCoverage(guide, snapshot) {
     missing: uncoveredChanges(guide, snapshot).map((c) => c.id),
     unknown: [...new Set(allSteps(guide).flatMap((s) => s.changes).filter((id) => !current.has(id)))],
     invalidSelections: allSteps(guide).filter((step) => step.changes.every((id) => current.has(id)) && selectedChanges(step, snapshot).length !== step.changes.length).map((step) => step.id),
+    multiFileSteps: allSteps(guide).filter((step) => new Set(snapshot.changes.filter((c) => step.changes.includes(c.id)).map((c) => JSON.stringify([c.comparisonId, c.file]))).size > 1).map((step) => step.id),
     baseMatches: guide.base === snapshot.base
   };
 }
@@ -560,7 +561,7 @@ async function main() {
         const snapshot = await snapshotForGuide(root, review.guide);
         const result = validateCoverage(review.guide, snapshot);
         results.push({ file: `.agr/${review.file}`, ...result });
-        if (!result.baseMatches || result.missing.length || result.unknown.length || result.invalidSelections.length) process.exitCode = 1;
+        if (!result.baseMatches || result.missing.length || result.unknown.length || result.invalidSelections.length || result.multiFileSteps.length) process.exitCode = 1;
       } catch (error) {
         results.push({ file: `.agr/${review.file}`, error: error.message });
         process.exitCode = 1;

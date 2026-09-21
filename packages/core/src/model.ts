@@ -168,12 +168,47 @@ export function uncoveredChanges(guide: Guide | undefined, snapshot: Snapshot): 
   });
 }
 
-export function validateCoverage(guide: Guide, snapshot: Snapshot): { missing: string[]; unknown: string[]; invalidSelections: string[]; baseMatches: boolean } {
+export function validateCoverage(guide: Guide, snapshot: Snapshot): { missing: string[]; unknown: string[]; invalidSelections: string[]; multiFileSteps: string[]; baseMatches: boolean } {
   const current = new Set(snapshot.changes.map(c => c.id));
   return {
     missing: uncoveredChanges(guide, snapshot).map(c => c.id),
     unknown: [...new Set(allSteps(guide).flatMap(s => s.changes).filter(id => !current.has(id)))],
     invalidSelections: allSteps(guide).filter(step => step.changes.every(id => current.has(id)) && selectedChanges(step, snapshot).length !== step.changes.length).map(step => step.id),
+    multiFileSteps: allSteps(guide).filter(step => new Set(snapshot.changes.filter(c => step.changes.includes(c.id)).map(c => JSON.stringify([c.comparisonId, c.file]))).size > 1).map(step => step.id),
     baseMatches: guide.base === snapshot.base
   };
+}
+
+/** Split legacy steps by file and comparison without transferring stale approval. */
+export function splitFileSteps(guide: Guide, snapshot: Snapshot): Guide {
+  const current = new Map(snapshot.changes.map(c => [c.id, c]));
+  const used = new Set([...guide.groups.map(g => g.id), ...allSteps(guide).map(s => s.id)]);
+  let changed = false;
+  const groups = guide.groups.map(group => ({ ...group, steps: group.steps.flatMap(step => {
+    // Missing IDs cannot safely be assigned to a file. Keep them for regeneration.
+    if (step.changes.some(id => !current.has(id))) return [step];
+    const files = new Map<string, Change[]>();
+    for (const id of step.changes) {
+      const c = current.get(id)!;
+      const key = JSON.stringify([c.comparisonId, c.file]);
+      files.set(key, [...(files.get(key) ?? []), c]);
+    }
+    if (files.size < 2) return [step];
+    changed = true;
+    const reviewed = stepState(step, snapshot, guide.base) === 'reviewed';
+    return [...files].map(([key, changes]) => {
+      const stem = `${step.id}-${hash(key).slice(0, 12)}`;
+      let id = stem, suffix = 2;
+      while (used.has(id)) id = `${stem}-${suffix++}`;
+      used.add(id);
+      const file = changes[0].file;
+      const sameFileComparisons = [...files.values()].filter(cs => cs[0].file === file).length > 1;
+      const child: Step = { ...step, id, title: `${step.title} · ${file}${sameFileComparisons ? ` [${changes[0].comparisonId}]` : ''}`, changes: changes.map(c => c.id) };
+      if (step.selections) child.selections = Object.fromEntries(Object.entries(step.selections).filter(([id]) => child.changes.includes(id)));
+      if (reviewed) child.review = { ...step.review!, fingerprint: stepFingerprint(child, snapshot) };
+      else if (step.review) child.review = { status: 'pending' };
+      return [child];
+    }).flat();
+  }) }));
+  return changed ? { ...guide, groups } : guide;
 }

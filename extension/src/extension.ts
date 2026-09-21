@@ -1,12 +1,12 @@
 import * as vscode from 'vscode';
-import { github, parsePullRequest, prComparison, PullRequest, remoteReview, syncFiles } from './githubSync';
+import { github, OutdatedReviewError, parsePullRequest, prComparison, PullRequest, remoteReview, syncFiles } from './githubSync';
 import { focusedDiff } from './focusedDiff';
 import { appendReviewText } from './commentText';
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { installSkills, skillTargets, InstallScope } from './skillInstall';
-import { allSteps, Change, Guide, hash, parseGuide, selectedChanges, Snapshot, Step, stepFingerprint, stepState, uncoveredChanges } from '../../packages/core/src/model';
+import { allSteps, Change, Guide, hash, parseGuide, selectedChanges, Snapshot, Step, stepFingerprint, splitFileSteps, stepState, uncoveredChanges } from '../../packages/core/src/model';
 import { git, repositoryRoot } from '../../packages/core/src/git';
 import { listReviews, reviewPath, ReviewFile } from '../../packages/core/src/reviews';
 import { changeContent, snapshotForGuide, scopeLabel } from '../../packages/core/src/scope';
@@ -30,6 +30,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
   private highlights = new Map<string, vscode.Range[]>();
   private readonly disposables: vscode.Disposable[] = [];
   private readonly githubClient = github;
+  private readonly outdatedNotices = new Set<string>();
   private readonly githubPrompts = new Set<string>();
   private githubPromptPending = false;
   private manualGitHubConnection = false;
@@ -53,7 +54,6 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
   private snapshot?: Snapshot;
   private activeId?: string;
   private activeItem?: Item;
-  private activeFileKey?: string;
   private openRequest = 0;
   private openTransition: Promise<void> = Promise.resolve();
   private renderedDiff?: string;
@@ -118,7 +118,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     this.renderedDiff = undefined;
     this.epoch++; this.generation++;
     this.reviewFile = file; this.guide = undefined; this.snapshot = undefined;
-    this.activeId = undefined; this.activeItem = undefined; this.activeFileKey = undefined; this.items = [];
+    this.activeId = undefined; this.activeItem = undefined; this.items = [];
     this.openedFingerprints.clear(); this.pendingReviews.clear();
     this.threads.forEach(thread => thread.dispose()); this.threads = [];
     this.highlights.clear(); this.decorate();
@@ -185,13 +185,36 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
         return;
       }
       const selected = reviews.find(review => review.file === file);
-      const guide = selected?.guide;
+      let guide = selected?.guide;
       this.guide = guide;
       this.view.title = guide?.title ?? 'AGR';
       this.view.description = file;
       if (selected?.error) throw new Error(`Guide error in .agr/${file}: ${selected.error}`);
       const snapshot = await snapshotForGuide(this.root, guide);
       if (generation !== this.generation) return;
+      if (guide && file) {
+        const root = this.root;
+        const previous = guide;
+        const split = splitFileSteps(guide, snapshot);
+        if (split !== guide) {
+          const migration = this.mutation.then(async () => {
+            if (generation !== this.generation) return false;
+            const uri = vscode.Uri.file(await reviewPath(root!, file));
+            const document = await vscode.workspace.openTextDocument(uri);
+            if (document.isDirty) throw new Error('Save the guide before AGR splits multi-file entries.');
+            const saved = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+            if (JSON.stringify(parseGuide(saved)) !== JSON.stringify(previous)) { this.refreshAgain = true; return false; }
+            if (document.isDirty || generation !== this.generation) return false;
+            if (Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8') !== saved) { this.refreshAgain = true; return false; }
+            await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(split, null, 2) + '\n'));
+            return true;
+          });
+          this.mutation = migration.then(() => {}, () => {});
+          if (!await migration || generation !== this.generation) return;
+          guide = split;
+          if (selected) selected.guide = split;
+        }
+      }
       this.snapshot = snapshot; this.guide = guide;
       this.items = [];
       const changes = new Map(snapshot.changes.map(c => [c.id, c]));
@@ -303,12 +326,9 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
       throw new Error('This step is out of date. Ask your agent to regenerate the guide; current changes are listed under Unguided changes.');
     }
     const files = [...new Map(selected.map(c => [JSON.stringify([c.comparisonId, c.file]), c])).values()];
-    const previousFile = fullDiff && item === this.activeItem ? files.find(c => JSON.stringify([c.comparisonId, c.file]) === this.activeFileKey) : undefined;
-    const representative = previousFile ?? (files.length === 1 ? files[0] : (await vscode.window.showQuickPick(
-      files.map(change => ({ label: change.file, description: change.comparisonId, change })),
-      { title: step?.title ?? 'Choose a file to review', placeHolder: 'Choose a file from this review step' }
-    ))?.change);
-    if (!representative || !isCurrent()) return;
+    if (files.length !== 1) throw new Error('This entry still covers multiple files. Refresh the review to split it, or regenerate it if its changes are stale.');
+    const representative = files[0];
+    if (!isCurrent()) return;
     const file = representative.file;
     let [before, after] = await Promise.all([changeContent(this.root, current, representative, 'original'), changeContent(this.root, current, representative, 'modified')]);
     if (!isCurrent()) return;
@@ -335,7 +355,6 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     const transition = this.openTransition.then(async () => {
       if (!isCurrent()) return;
       this.activeId = step?.id; this.activeItem = item;
-      this.activeFileKey = JSON.stringify([representative.comparisonId, representative.file]);
       if (step && fingerprint) this.openedFingerprints.set(step.id, fingerprint);
       const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
       if (this.renderedDiff === rendered && input instanceof vscode.TabInputTextDiff && input.original.toString() === left.toString() && input.modified.toString() === right.toString()) return;
@@ -449,6 +468,20 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     this.queueGitHub(root, file, [...new Set(snapshot.changes.filter(c => step.changes.includes(c.id)).map(c => c.file))]);
   }
   private githubKey(root: string, file: string): string { return `agr.github:${path.join(root, '.agr', file)}`; }
+  private notifyOutdated(error: OutdatedReviewError, root: string, file: string): void {
+    const noticeKey = JSON.stringify([root, file, error.message]);
+    if (this.root === root && this.reviewFile === file) {
+      this.githubStatus.text = '$(warning) AGR: Review outdated';
+      this.githubStatus.tooltip = error.message;
+      this.githubStatus.show();
+    }
+    if (this.outdatedNotices.has(noticeKey)) return;
+    this.outdatedNotices.add(noticeKey);
+    void vscode.window.showWarningMessage(error.message, 'Open Guide', 'Open PR').then(async action => {
+      if (action === 'Open Guide') await vscode.window.showTextDocument(vscode.Uri.file(await reviewPath(root, file)));
+      if (action === 'Open PR') await vscode.env.openExternal(vscode.Uri.parse(`https://github.com/${error.pr.repo}/pull/${error.pr.number}`));
+    }).then(undefined, error => { void vscode.window.showErrorMessage((error as Error).message); });
+  }
   private githubChoiceKey(root: string, file: string, url: string): string {
     return `${this.githubKey(root, file)}:choice:${url.replace(/\/$/, '')}`;
   }
@@ -481,7 +514,12 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
   }
   private async enableGitHub(root: string, file: string, guide: Guide, pr: PullRequest): Promise<void> {
     const epoch = this.epoch;
-    await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Checking GitHub PR…' }, () => remoteReview(this.githubClient(root), pr, guide));
+    try {
+      await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Checking GitHub PR…' }, () => remoteReview(this.githubClient(root), pr, guide));
+    } catch (error) {
+      if (error instanceof OutdatedReviewError) { this.notifyOutdated(error, root, file); return; }
+      throw error;
+    }
     if (this.disposed || !vscode.workspace.isTrusted || epoch !== this.epoch || root !== this.root || file !== this.reviewFile || guide.base !== this.guide?.base || guide.pullRequestUrl !== this.guide?.pullRequestUrl) throw new Error('The active review changed. Connect it again.');
     await this.context.workspaceState.update(this.githubKey(root, file), { pr, base: guide.base });
     if (guide.pullRequestUrl) await this.context.workspaceState.update(this.githubChoiceKey(root, file, guide.pullRequestUrl), 'enabled');
@@ -544,6 +582,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     }).catch(error => {
       if (!connected()) return;
       if ((error as Error).message === 'AGR_SYNC_SUPERSEDED') { this.queueGitHub(root, file, affected); return; }
+      if (error instanceof OutdatedReviewError) { this.notifyOutdated(error, root, file); return; }
       showStatus('$(warning) AGR: GitHub sync failed');
       void vscode.window.showWarningMessage(`AGR progress is saved locally. ${(error as Error).message}`, 'Retry').then(action => {
         if (action === 'Retry' && connected()) this.queueGitHub(root, file, affected);

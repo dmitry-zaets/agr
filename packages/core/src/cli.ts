@@ -40,7 +40,7 @@ async function main(): Promise<void> {
         const snapshot = await snapshotForGuide(root, review.guide);
         const result = validateCoverage(review.guide, snapshot);
         results.push({ file: `.agr/${review.file}`, ...result });
-        if (!result.baseMatches || result.missing.length || result.unknown.length || result.invalidSelections.length) process.exitCode = 1;
+        if (!result.baseMatches || result.missing.length || result.unknown.length || result.invalidSelections.length || result.multiFileSteps.length) process.exitCode = 1;
       } catch (error) {
         results.push({ file: `.agr/${review.file}`, error: (error as Error).message });
         process.exitCode = 1;

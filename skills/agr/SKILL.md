@@ -41,7 +41,7 @@ Each step has a short title, a note explaining its purpose, and an optional `foc
 - Preserve complete identifiers and paths; put a long one on its own line instead of breaking the identifier. Do not pad text with spaces or add code fences to prose.
 - Read the final note and focus strings before saving and break up long multi-sentence lines. The extension can also wrap naturally to the available width.
 
-Use the snapshot's exact `changes[].id` values. Each ID represents a contiguous diff hunk or a whole binary/metadata change. Assign separate hunks in the same file to separate steps when they explain different concepts. A step can reference several hunks or files.
+Use the snapshot's exact `changes[].id` values. Each ID represents a contiguous diff hunk or a whole binary/metadata change. Assign separate hunks in the same file to separate steps when they explain different concepts. Each step must reference exactly one file in one comparison. It may include several hunks or selected ranges from that file. Put related files in separate adjacent steps under the same group; never combine them into one step.
 
 To split a single hunk (especially a newly added file), add `selections` keyed by its change ID. Ranges are inclusive, 1-based offsets within that hunk's removed or added lines, not absolute file line numbers. For example, `"selections": { "<change ID>": { "modified": { "start": 1, "end": 20 } } }` reviews only the first 20 added lines. Another step can reference the same ID with offsets 21–40. For replacement hunks, account for both `original` and `modified` ranges across the steps; selecting only new lines leaves removed lines unguided. Omit selections for whole-hunk steps. Do not use selections on binary/metadata changes. An edit anywhere in a subdivided hunk conservatively invalidates its slices.
 
@@ -83,7 +83,7 @@ After writing the JSON file to `<repository-root>/.agr/<name>.json`, validate th
 node <skill-directory>/scripts/agr.cjs validate <repository> <name>.json
 ```
 
-Success means `baseMatches: true` and empty `missing`, `unknown`, and `invalidSelections` lists. A missing ID may indicate a partially uncovered hunk. If files changed while writing, capture again and update the affected steps. After two failed refresh attempts caused by ongoing edits, explain the race and ask the user to pause edits. Do not hide failures or drop uncovered changes.
+Success means `baseMatches: true` and empty `missing`, `unknown`, `invalidSelections`, and `multiFileSteps` lists. A missing ID may indicate a partially uncovered hunk. If files changed while writing, capture again and update the affected steps. After two failed refresh attempts caused by ongoing edits, explain the race and ask the user to pause edits. Do not hide failures or drop uncovered changes.
 
 Before reporting completion, verify that the file exists inside the repository-root `.agr/` folder and that the validator exits successfully. If writing or validation is blocked, state the specific blocker; do not describe the guide as created or ready.
 

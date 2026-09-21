@@ -88,7 +88,8 @@
                   "items": {
                     "type": "string",
                     "pattern": "^c_[a-f0-9]{64}$"
-                  }
+                  },
+                  "description": "Snapshot change IDs from exactly one file and one comparison. The validator checks this against the snapshot."
                 },
                 "selections": {
                   "type": "object",

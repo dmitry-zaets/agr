@@ -5,6 +5,12 @@ import { allSteps, Guide, Snapshot, stepState, uncoveredChanges, validateCoverag
 const exec = promisify(execFile);
 export interface PullRequest { repo: string; number: number }
 export interface RemoteReview { id: string; head: string; base: string; files: { path: string; previousPath?: string }[] }
+export class OutdatedReviewError extends Error {
+  constructor(public readonly pr: PullRequest, detail: string) {
+    super(`AGR review is outdated. ${detail} GitHub Viewed sync is paused. Ask your agent to refresh the guide for the current PR, then reconnect it.`);
+    this.name = 'OutdatedReviewError';
+  }
+}
 export type Gh = (args: string[]) => Promise<any>;
 export function github(root: string): Gh {
   return async args => {
@@ -33,9 +39,10 @@ export function prComparison(guide: Guide) {
 export async function remoteReview(gh: Gh, pr: PullRequest, guide: Guide): Promise<RemoteReview> {
   const c = prComparison(guide);
   const info = await gh(['api', `repos/${pr.repo}/pulls/${pr.number}`]);
-  if (info.state !== 'open' || info.head.sha !== c.head) throw new Error('The PR is closed or its head changed. Refresh the guide before syncing.');
+  if (info.state !== 'open') throw new OutdatedReviewError(pr, 'The PR is closed.');
+  if (info.head.sha !== c.head) throw new OutdatedReviewError(pr, `Guide commit: ${c.head!.slice(0, 8)}. Current PR commit: ${info.head.sha.slice(0, 8)}.`);
   const comparison = await gh(['api', `repos/${pr.repo}/compare/${info.base.sha}...${info.head.sha}`]);
-  if (comparison.merge_base_commit.sha !== c.base) throw new Error('The PR merge base changed or does not match this guide. Regenerate the PR guide.');
+  if (comparison.merge_base_commit.sha !== c.base) throw new OutdatedReviewError(pr, `Guide merge base: ${c.base!.slice(0, 8)}. Current PR merge base: ${comparison.merge_base_commit.sha.slice(0, 8)}.`);
   const pages = await gh(['api', '--paginate', '--slurp', `repos/${pr.repo}/pulls/${pr.number}/files?per_page=100`]);
   const files = pages.flat();
   if (files.length !== info.changed_files) throw new Error('GitHub did not return the complete PR file list. Sync was stopped.');
@@ -61,7 +68,7 @@ export async function syncFiles(gh: Gh, pr: PullRequest, guide: Guide, snapshot:
     if (!affected && !viewed) continue;
     if (!await isCurrent()) return;
     const latest = await gh(['api', `repos/${pr.repo}/pulls/${pr.number}`]);
-    if (latest.state !== 'open' || latest.head.sha !== remote.head || latest.base.sha !== remote.base) throw new Error('The PR changed during sync. Refresh the guide and retry.');
+    if (latest.state !== 'open' || latest.head.sha !== remote.head || latest.base.sha !== remote.base) throw new OutdatedReviewError(pr, `The PR changed during sync. Guide commit: ${remote.head.slice(0, 8)}. Current PR commit: ${latest.head.sha.slice(0, 8)}.`);
     if (!await isCurrent()) return;
     const mutation = viewed ? 'markFileAsViewed' : 'unmarkFileAsViewed';
     await gh(['api', 'graphql', '-f', `pr=${remote.id}`, '-f', `path=${file.path}`, '-f', `query=mutation($pr: ID!, $path: String!) { ${mutation}(input: {pullRequestId: $pr, path: $path}) { clientMutationId } }`]);

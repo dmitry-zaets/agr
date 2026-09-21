@@ -85,7 +85,7 @@ test('scoped guide validates and approval cannot transfer to a different compari
   const snapshot = await snapshotScope(root, { comparisons: [{ id: 'stage', kind: 'staged' }] });
   const guide: Guide = { version: 1, title: 'Staged', base: snapshot.base, comparison: 'scoped', scope: snapshot.scope,
     groups: [{ id: 'group', title: 'Change', steps: [{ id: 'step', title: 'Edit', note: 'Read it.', changes: snapshot.changes.map(c => c.id) }] }] };
-  assert.deepEqual(validateCoverage(parseGuide(JSON.stringify(guide)), await snapshotForGuide(root, guide)), { missing: [], unknown: [], invalidSelections: [], baseMatches: true });
+  assert.deepEqual(validateCoverage(parseGuide(JSON.stringify(guide)), await snapshotForGuide(root, guide)), { missing: [], unknown: [], invalidSelections: [], multiFileSteps: [], baseMatches: true });
   const step = guide.groups[0].steps[0];
   step.review = { status: 'reviewed', fingerprint: stepFingerprint(step, snapshot) };
   assert.equal(stepState(step, snapshot, guide.base), 'reviewed');

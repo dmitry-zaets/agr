@@ -29,6 +29,22 @@ exports.run = async function () {
   diffEditor = vscode.window.visibleTextEditors.find(e => e.document.uri.path === '/full/Working-tree/feature.ts');
   assert.ok(diffEditor.document.getText().includes('last = 30'), 'full diff restores other changes');
   await app.open(step);
+  const agrTabs = () => vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => tab.input instanceof vscode.TabInputTextDiff && tab.input.modified.scheme === 'agr');
+  assert.equal(agrTabs().length, 1, 'focused/full navigation reuses one preview tab');
+  for (let i = 0; i < 3; i++) {
+    await app.open(app.getState().items[1].children[0]);
+    await app.open(step);
+    assert.equal(agrTabs().length, 1, 'sequential review items do not accumulate tabs');
+    assert.equal(agrTabs()[0].isPreview, true, 'review remains a native preview tab');
+  }
+  await vscode.commands.executeCommand('workbench.action.keepEditor');
+  const keptTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+  assert.equal(keptTab.isPreview, false);
+  await app.open(app.getState().items[1].children[0]);
+  assert.equal(agrTabs().length, 2, 'explicitly kept tabs survive alongside the preview');
+  await vscode.window.tabGroups.close(keptTab);
+  await app.open(step);
+  assert.equal(agrTabs().length, 1);
   const existingThread = app.threads[0];
   existingThread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
   const reopening = app.open(step);
@@ -237,6 +253,22 @@ exports.run = async function () {
   await fs.unlink(path.join(root, '.agr', 'missing-commits.json'));
   await app.refresh();
   assert.equal(app.getState().reviewFile, 'fixture.json', 'deleting a selected guide chooses the remaining review');
+
+  await loadScope({ comparisons: [{ id: 'legacy', kind: 'working-tree', paths: ['feature.ts', 'new.ts'] }] });
+  const splitItems = app.getState().items[0].children;
+  assert.equal(splitItems.length, 2, 'old multi-file steps become separate review entries');
+  const migrated = JSON.parse(await fs.readFile(firstFile, 'utf8'));
+  assert.equal(migrated.groups[0].steps.length, 2, 'split entries are saved to the actual plan');
+  const afterMigration = await fs.readFile(firstFile, 'utf8');
+  await app.refresh();
+  assert.equal(await fs.readFile(firstFile, 'utf8'), afterMigration, 'refresh does not repeatedly rewrite a split guide');
+  for (const item of app.getState().items[0].children) {
+    await app.open(item);
+    const files = new Set(app.getState().snapshot.changes.filter(c => item.step.changes.includes(c.id)).map(c => c.file));
+    assert.equal(files.size, 1);
+  }
+  await app.toggle(app.getState().items[0].children[0], true);
+  assert.equal(app.getState().items[0].children[1].checkboxState, vscode.TreeItemCheckboxState.Unchecked, 'split entries have independent progress');
 
   await app.installSkill('repository');
   for (const folder of ['.agents', '.claude']) {
