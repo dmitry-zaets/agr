@@ -11,7 +11,7 @@
   ],
   "properties": {
     "version": {
-      "const": 1
+      "const": 2
     },
     "title": {
       "type": "string",
@@ -41,7 +41,7 @@
         "required": [
           "id",
           "title",
-          "steps"
+          "changes"
         ],
         "properties": {
           "id": {
@@ -52,15 +52,14 @@
             "type": "string",
             "minLength": 1
           },
-          "steps": {
+          "changes": {
             "type": "array",
             "items": {
               "type": "object",
               "required": [
                 "id",
                 "title",
-                "note",
-                "changes"
+                "files"
               ],
               "properties": {
                 "id": {
@@ -71,61 +70,90 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "note": {
-                  "type": "string"
-                },
-                "focus": {
-                  "type": "string"
-                },
-                "optional": {
-                  "type": "boolean",
-                  "default": false
-                },
-                "changes": {
+                "files": {
                   "type": "array",
                   "minItems": 1,
-                  "uniqueItems": true,
                   "items": {
-                    "type": "string",
-                    "pattern": "^c_[a-f0-9]{64}$"
-                  },
-                  "description": "Snapshot change IDs from exactly one file and one comparison. The validator checks this against the snapshot."
-                },
-                "selections": {
-                  "type": "object",
-                  "description": "Optional inclusive 1-based offsets within each hunk's removed/added lines. Omit to review the whole hunk.",
-                  "additionalProperties": {
                     "type": "object",
-                    "minProperties": 1,
-                    "additionalProperties": false,
+                    "required": [
+                      "id",
+                      "title",
+                      "note",
+                      "changes",
+                      "file"
+                    ],
                     "properties": {
-                      "original": {
-                        "$ref": "#/definitions/offsetRange"
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
                       },
-                      "modified": {
-                        "$ref": "#/definitions/offsetRange"
+                      "title": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "note": {
+                        "type": "string"
+                      },
+                      "focus": {
+                        "type": "string"
+                      },
+                      "optional": {
+                        "type": "boolean",
+                        "default": false
+                      },
+                      "changes": {
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "pattern": "^c_[a-f0-9]{64}$"
+                        },
+                        "description": "Snapshot change IDs from exactly one file and one comparison. The validator checks this against the snapshot."
+                      },
+                      "selections": {
+                        "type": "object",
+                        "description": "Optional inclusive 1-based offsets within each hunk's removed/added lines. Omit to review the whole hunk.",
+                        "additionalProperties": {
+                          "type": "object",
+                          "minProperties": 1,
+                          "additionalProperties": false,
+                          "properties": {
+                            "original": {
+                              "$ref": "#/definitions/offsetRange"
+                            },
+                            "modified": {
+                              "$ref": "#/definitions/offsetRange"
+                            }
+                          }
+                        }
+                      },
+                      "review": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "enum": [
+                              "pending",
+                              "reviewed"
+                            ]
+                          },
+                          "fingerprint": {
+                            "type": "string"
+                          },
+                          "reviewedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      },
+                      "file": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Repository-relative path matching every referenced snapshot change."
                       }
-                    }
-                  }
-                },
-                "review": {
-                  "type": "object",
-                  "required": [
-                    "status"
-                  ],
-                  "properties": {
-                    "status": {
-                      "enum": [
-                        "pending",
-                        "reviewed"
-                      ]
-                    },
-                    "fingerprint": {
-                      "type": "string"
-                    },
-                    "reviewedAt": {
-                      "type": "string",
-                      "format": "date-time"
                     }
                   }
                 }

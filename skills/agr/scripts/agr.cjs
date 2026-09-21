@@ -53,7 +53,27 @@ function parseScope(value) {
   return scope;
 }
 function parseGuide(text) {
-  const g = JSON.parse(text);
+  let g = JSON.parse(text);
+  if (g?.version === 2) {
+    const ids2 = /* @__PURE__ */ new Set();
+    if (!Array.isArray(g.groups)) throw new Error("Invalid review guide: groups must be an array.");
+    g = { ...g, version: 1, groups: g.groups.map((section) => {
+      if (!section || !Array.isArray(section.changes) || section.steps !== void 0) throw new Error("Invalid review guide: sections need changes.");
+      const steps = section.changes.flatMap((change) => {
+        if (!change || typeof change.id !== "string" || !change.id.trim() || ids2.has(change.id) || typeof change.title !== "string" || !change.title.trim() || !Array.isArray(change.files) || !change.files.length) throw new Error("Invalid review guide: changes need unique id, title, and files.");
+        ids2.add(change.id);
+        return change.files.map((file) => {
+          if (!file || typeof file.file !== "string" || !file.file || file.file.startsWith("/") || file.file.includes("\\") || file.file.includes("\0") || file.file.split("/").includes("..")) throw new Error("Invalid review guide: each file needs a repository-relative path.");
+          return { ...file, title: file.title ?? change.title, changeGroup: { id: change.id, title: change.title } };
+        });
+      });
+      const { changes, ...rest } = section;
+      return { ...rest, steps };
+    }) };
+    for (const section of g.groups) for (const entry of [section, ...section.steps]) {
+      if (ids2.has(entry.id)) throw new Error(`Invalid review guide: duplicate id ${entry.id}.`);
+    }
+  }
   const fail = (message) => {
     throw new Error(`Invalid review guide: ${message}`);
   };
@@ -87,6 +107,8 @@ function parseGuide(text) {
           }
         }
       }
+      if (step.file !== void 0 && (typeof step.file !== "string" || !step.file || step.file.startsWith("/") || step.file.includes("\\") || step.file.includes("\0") || step.file.split("/").includes(".."))) fail(`${step.id}: file must be repository-relative.`);
+      if (step.changeGroup !== void 0 && (!step.changeGroup || !string(step.changeGroup.id) || !string(step.changeGroup.title))) fail(`${step.id}: invalid change group.`);
       if (step.focus !== void 0 && typeof step.focus !== "string") fail(`${step.id}: focus must be text.`);
       if (step.optional !== void 0 && typeof step.optional !== "boolean") fail(`${step.id}: optional must be boolean.`);
       if (step.review !== void 0 && (!step.review || !["pending", "reviewed"].includes(step.review.status))) fail(`${step.id}: invalid review status.`);
@@ -98,7 +120,7 @@ function parseGuide(text) {
 function selectedChanges(step, snapshot) {
   return step.changes.flatMap((id) => {
     const change = snapshot.changes.find((c) => c.id === id);
-    if (!change) return [];
+    if (!change || step.file !== void 0 && step.file !== change.file) return [];
     const selection = step.selections?.[id];
     if (!selection) return [change];
     const { original, modified } = selection;

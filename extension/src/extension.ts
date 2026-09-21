@@ -6,7 +6,7 @@ import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { outdatedSkills, updateInstalledSkills } from './skillUpdate';
 import { installSkills, skillTargets, InstallScope } from './skillInstall';
-import { allSteps, Change, Guide, hash, parseGuide, selectedChanges, Snapshot, Step, stepFingerprint, splitFileSteps, stepState, uncoveredChanges } from '../../packages/core/src/model';
+import { allSteps, Change, Guide, hash, parseGuide, selectedChanges, Snapshot, Step, stepFingerprint, nestGuide, serializeGuide, stepState, uncoveredChanges } from '../../packages/core/src/model';
 import { git, repositoryRoot } from '../../packages/core/src/git';
 import { listReviews, reviewPath, ReviewFile } from '../../packages/core/src/reviews';
 import { changeContent, snapshotForGuide, scopeLabel } from '../../packages/core/src/scope';
@@ -91,8 +91,9 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
       checkboxState: pending.reviewed ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked
     });
   }
-  getChildren(item?: Item): Item[] { return item?.children ?? this.items; }
-  getParent(item: Item): Item | undefined { return this.items.find(parent => parent.children.includes(item)); }
+  getChildren(item?: Item): Item[] { return item ? (this.treeItems().find(current => current.id && current.id === item.id) ?? item).children : this.items; }
+  private treeItems(items = this.items): Item[] { return items.flatMap(item => [item, ...this.treeItems(item.children)]); }
+  getParent(item: Item): Item | undefined { return this.treeItems().find(parent => parent.children.some(child => child === item || (item.id && child.id === item.id))); }
   private schedule(): void { if (this.timer) clearTimeout(this.timer); this.timer = setTimeout(() => void this.refresh(), 650); }
 
   async selectRepository(): Promise<void> {
@@ -196,18 +197,18 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
       if (guide && file) {
         const root = this.root;
         const previous = guide;
-        const split = splitFileSteps(guide, snapshot);
+        const split = nestGuide(guide, snapshot);
         if (split !== guide) {
           const migration = this.mutation.then(async () => {
             if (generation !== this.generation) return false;
             const uri = vscode.Uri.file(await reviewPath(root!, file));
             const document = await vscode.workspace.openTextDocument(uri);
-            if (document.isDirty) throw new Error('Save the guide before AGR splits multi-file entries.');
+            if (document.isDirty) throw new Error('Save the guide before AGR upgrades its structure.');
             const saved = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
             if (JSON.stringify(parseGuide(saved)) !== JSON.stringify(previous)) { this.refreshAgain = true; return false; }
             if (document.isDirty || generation !== this.generation) return false;
             if (Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8') !== saved) { this.refreshAgain = true; return false; }
-            await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(split, null, 2) + '\n'));
+            await vscode.workspace.fs.writeFile(uri, Buffer.from(serializeGuide(split)));
             return true;
           });
           this.mutation = migration.then(() => {}, () => {});
@@ -222,16 +223,17 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
       let reviewed = 0;
       if (guide) {
         for (const [index, group] of guide.groups.entries()) {
-          const parent = new Item(`${index + 1}. ${group.title}`);
+          const parent = new Item(`${index + 1} ${group.title.replace(/^\s*\d+(?:\.\d+)*[.)]?\s+/, '')}`);
           parent.id = `${this.reviewFile}:${group.id}`;
           parent.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
-          parent.children = group.steps.map(step => {
+          const leaves = group.steps.map(step => {
             const state = stepState(step, snapshot, guide.base);
             if (state === 'reviewed') reviewed++;
             const item = new Item(step.title, step, undefined, this.reviewKey);
             item.id = `${this.reviewFile}:${step.id}`; item.contextValue = 'step';
             const files = [...new Set(step.changes.map(id => changes.get(id)?.file).filter(Boolean))] as string[];
-            item.description = state === 'stale' ? 'Needs another look' : `${files.map(f => path.basename(f)).join(', ')}${step.optional ? ' · optional' : ''}`;
+            item.label = files.length === 1 ? path.basename(files[0]) : step.title;
+            item.description = state === 'stale' ? 'Needs another look' : `${files.length === 1 && path.dirname(files[0]) !== '.' ? path.dirname(files[0]) : ''}${step.optional ? ' · optional' : ''}`;
             const tooltip = new vscode.MarkdownString();
             appendReviewText(tooltip, step.note);
             if (step.focus) appendReviewText(tooltip.appendMarkdown('\n\n'), `Check: ${step.focus}`);
@@ -242,6 +244,21 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
             item.command = { command: 'agr.open', title: 'Open Step', arguments: [item] };
             return item;
           });
+          const changeGroups = new Map<string, Item>();
+          for (const leaf of leaves) {
+            const step = leaf.step!;
+            const title = step.changeGroup?.title ?? step.title;
+            const key = step.changeGroup?.id ?? step.id;
+            let changeGroup = changeGroups.get(key);
+            if (!changeGroup) {
+              changeGroup = new Item(`${index + 1}.${changeGroups.size + 1} ${title}`);
+              changeGroup.id = `${parent.id}:change:${key}`;
+              changeGroup.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
+              changeGroups.set(key, changeGroup);
+            }
+            changeGroup.children.push(leaf);
+          }
+          parent.children = [...changeGroups.values()];
           this.items.push(parent);
         }
       } else {
@@ -266,7 +283,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
       }
       this.view.title = guide?.title ?? 'AGR';
       this.view.message = guide
-        ? `${reviewed} / ${allSteps(guide).length} reviewed · ${uncovered.length} unguided\n${scopeLabel(snapshot)}${guide.summary ? '\n' + guide.summary : ''}`
+        ? `${this.progressLabel(reviewed, allSteps(guide).length)} · ${uncovered.length} unguided\n${scopeLabel(snapshot)}${guide.summary ? '\n' + guide.summary : ''}`
         : 'Ask your agent to create .agr/<name>.json using the agr skill.';
       this.changed.fire();
       if (this.view.visible) void this.offerGitHubSync();
@@ -276,21 +293,35 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
       this.threads.forEach(thread => thread.dispose()); this.threads = [];
       this.highlights.clear(); this.decorate();
       this.items = this.guide?.groups.map((group, index) => {
-        const parent = new Item(`${index + 1}. ${group.title}`);
+        const parent = new Item(`${index + 1} ${group.title.replace(/^\s*\d+(?:\.\d+)*[.)]?\s+/, '')}`);
         parent.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
-        parent.children = group.steps.map(step => {
-          const item = new Item(step.title);
+        const changeGroups = new Map<string, Item>();
+        for (const step of group.steps) {
+          const key = step.changeGroup?.id ?? step.id;
+          let change = changeGroups.get(key);
+          if (!change) {
+            change = new Item(`${index + 1}.${changeGroups.size + 1} ${step.changeGroup?.title ?? step.title}`);
+            change.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
+            changeGroups.set(key, change);
+          }
+          const item = new Item(step.file ? path.basename(step.file) : step.title);
           item.description = 'Unavailable';
           const note = new vscode.MarkdownString();
           appendReviewText(note, step.note + (step.focus ? `\n\nCheck: ${step.focus}` : ''));
           item.tooltip = note; item.iconPath = new vscode.ThemeIcon('warning');
-          return item;
-        });
+          change.children.push(item);
+        }
+        parent.children = [...changeGroups.values()];
         return parent;
       }) ?? [];
       this.view.message = `Review unavailable: ${(error as Error).message}\nOpen the guide to read its notes, or switch reviews. Fetch missing commits or ask your agent to refresh this review.`;
       this.changed.fire();
     }
+  }
+
+  private progressLabel(reviewed: number, total: number): string {
+    const filled = total ? Math.floor(reviewed / total * 10) : 0;
+    return `${'▰'.repeat(filled)}${'▱'.repeat(10 - filled)} ${total ? Math.round(reviewed / total * 100) : 0}% · ${reviewed} / ${total} reviewed`;
   }
 
   private virtual(file: string, side: string, content: string): vscode.Uri {
@@ -307,7 +338,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     for (const editor of vscode.window.visibleTextEditors) editor.setDecorations(this.decoration, this.highlights.get(editor.document.uri.toString()) ?? []);
   }
   async open(item?: Item): Promise<void> {
-    if (!item) item = this.activeItem ?? this.items.flatMap(i => i.children).find(i => i.step?.id === this.activeId);
+    if (!item) item = this.activeItem ?? this.treeItems().find(i => i.step?.id === this.activeId);
     if (!item || (!item.step && !item.change)) return;
     if (item.reviewFile !== this.reviewKey) throw new Error('The active review changed. Select a step in the current review.');
     const epoch = this.epoch, request = ++this.openRequest;
@@ -403,7 +434,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     if (item && item.reviewFile !== this.reviewKey) throw new Error('The active review changed.');
     const id = item?.step?.id ?? this.activeId;
     const root = this.root, file = this.reviewFile, epoch = this.epoch;
-    const current = this.items.flatMap(group => group.children).find(entry => entry.step?.id === id);
+    const current = this.treeItems().find(entry => entry.step?.id === id);
     if (!id || !current || !root || !file) return;
     const reviewed = desired ?? !(this.pendingReviews.get(id)?.reviewed ?? (current.checkboxState === vscode.TreeItemCheckboxState.Checked));
     const token = Symbol(id);
@@ -445,20 +476,20 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     if (Buffer.from(await vscode.workspace.fs.readFile(document.uri)).toString('utf8') !== savedText) throw new Error('The guide changed while updating progress. Try again.');
     // Write the saved artifact directly: an agent may have updated it while an
     // editor still has an older disk timestamp. Never dirty a stale editor buffer.
-    await vscode.workspace.fs.writeFile(document.uri, Buffer.from(JSON.stringify(guide, null, 2) + '\n'));
+    await vscode.workspace.fs.writeFile(document.uri, Buffer.from(serializeGuide(guide)));
     if (epoch !== this.epoch) return;
     this.generation++;
     this.guide = guide;
-    const current = this.items.flatMap(group => group.children).find(entry => entry.step?.id === id);
+    const current = this.treeItems().find(entry => entry.step?.id === id);
     if (current) {
       current.step = step;
       current.checkboxState = reviewed ? vscode.TreeItemCheckboxState.Checked : vscode.TreeItemCheckboxState.Unchecked;
       current.iconPath = new vscode.ThemeIcon(reviewed ? 'pass' : 'circle-outline');
-      current.description = `${[...new Set(snapshot.changes.filter(change => step.changes.includes(change.id)).map(change => path.basename(change.file)))].join(', ')}${step.optional ? ' · optional' : ''}`;
+      current.description = `${[...new Set(snapshot.changes.filter(change => step.changes.includes(change.id)).map(change => path.dirname(change.file) === '.' ? '' : path.dirname(change.file)))].join(', ')}${step.optional ? ' · optional' : ''}`;
     }
     if (this.snapshot && this.snapshot.base === snapshot.base) {
       const count = allSteps(guide).filter(entry => stepState(entry, this.snapshot!, guide.base) === 'reviewed').length;
-      this.view.message = `${count} / ${allSteps(guide).length} reviewed · ${uncoveredChanges(guide, this.snapshot).length} unguided\n${scopeLabel(this.snapshot)}${guide.summary ? '\n' + guide.summary : ''}`;
+      this.view.message = `${this.progressLabel(count, allSteps(guide).length)} · ${uncoveredChanges(guide, this.snapshot).length} unguided\n${scopeLabel(this.snapshot)}${guide.summary ? '\n' + guide.summary : ''}`;
     }
     this.changed.fire();
     this.schedule();
@@ -587,10 +618,20 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     });
   }
   async navigate(direction: number): Promise<void> {
-    const steps = this.items.flatMap(i => i.children).filter(i => i.step);
+    const steps = this.treeItems().filter(i => i.step);
     const index = steps.findIndex(i => i.step?.id === this.activeId);
     const next = steps[index < 0 ? (direction > 0 ? 0 : steps.length - 1) : index + direction];
-    if (next) { await this.open(next); const current = this.items.flatMap(i => i.children).find(i => i.step?.id === next.step?.id); if (current) await this.view.reveal(current, { select: true }); }
+    if (!next) return;
+    await this.open(next);
+    const current = this.treeItems().find(i => i.step?.id === next.step?.id);
+    if (!current || !this.view.visible) return;
+    const parent = this.getParent(current);
+    if (parent) {
+      const section = this.getParent(parent);
+      if (section) await this.view.reveal(section, { expand: true });
+      await this.view.reveal(parent, { expand: true });
+    }
+    await this.view.reveal(current, { select: true });
   }
   async edit(): Promise<void> {
     if (!this.root) throw new Error('Open a Git repository first.');

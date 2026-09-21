@@ -3,17 +3,40 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const vscode = require('vscode');
 
+// Normalize saved wire format for the shared behavioral checks below.
+function readGuide(text) {
+  const guide = JSON.parse(text);
+  if (guide.version !== 2) return guide;
+  return { ...guide, version: 1, groups: guide.groups.map(({ changes, ...section }) => ({ ...section,
+    steps: changes.flatMap(change => change.files.map(file => ({ ...file, changeGroup: { id: change.id, title: change.title } }))) })) };
+}
+
 exports.run = async function () {
   const root = vscode.workspace.workspaceFolders[0].uri.fsPath;
   const extension = vscode.extensions.getExtension('dmitry-zaets.agr');
   assert.ok(extension, 'extension is discovered');
   const app = await extension.activate();
   await app.refresh();
-  assert.ok(app.getState().snapshot, app.view.message);
-  assert.equal(app.getState().snapshot.changes.length, 2);
-  assert.equal(app.getState().items.length, 2, 'two conceptual sections');
+  // Existing behavior checks operate on file leaves within each section.
+  const state = () => {
+    const result = app.getState();
+    return { ...result, items: result.items.map(section => ({ ...section,
+      children: section.children.flatMap(item => item.children.length ? item.children : [item]) })) };
+  };
+  const section = app.getState().items[0];
+  assert.equal(section.label, '1 First concern');
+  assert.match(app.view.message, /▱{10} 0% · 0 \/ 2 reviewed/);
+  assert.equal(section.children[0].label, '1.1 Change first value');
+  assert.equal(section.children[0].checkboxState, undefined);
+  assert.equal(section.children[0].children[0].label, 'feature.ts');
+  assert.equal(app.getParent(section.children[0].children[0]), section.children[0]);
+  assert.equal(app.getParent(section.children[0]), section);
 
-  let step = app.getState().items[0].children[0];
+  assert.ok(state().snapshot, app.view.message);
+  assert.equal(state().snapshot.changes.length, 2);
+  assert.equal(state().items.length, 2, 'two conceptual sections');
+
+  let step = state().items[0].children[0];
   assert.ok(!step.tooltip.value.includes('&nbsp;'), 'prose has normal spaces so comments can wrap');
   assert.ok(step.tooltip.value.includes('concern. Keep'), 'single authored newlines wrap within a paragraph');
   assert.ok(step.tooltip.value.includes('\n\nCheck:'), 'focus retains a separate paragraph');
@@ -31,7 +54,7 @@ exports.run = async function () {
   const agrTabs = () => vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => tab.input instanceof vscode.TabInputTextDiff && tab.input.modified.scheme === 'agr');
   assert.equal(agrTabs().length, 1, 'Repeated navigation reuses one preview tab');
   for (let i = 0; i < 3; i++) {
-    await app.open(app.getState().items[1].children[0]);
+    await app.open(state().items[1].children[0]);
     await app.open(step);
     assert.equal(agrTabs().length, 1, 'sequential review items do not accumulate tabs');
     assert.equal(agrTabs()[0].isPreview, true, 'review remains a native preview tab');
@@ -39,7 +62,7 @@ exports.run = async function () {
   await vscode.commands.executeCommand('workbench.action.keepEditor');
   const keptTab = vscode.window.tabGroups.activeTabGroup.activeTab;
   assert.equal(keptTab.isPreview, false);
-  await app.open(app.getState().items[1].children[0]);
+  await app.open(state().items[1].children[0]);
   assert.equal(agrTabs().length, 1, 'steps in the same file reuse its pinned full diff');
   assert.equal(agrTabs()[0].isPreview, false, 'navigation preserves the pinned tab');
   await vscode.window.tabGroups.close(keptTab);
@@ -52,38 +75,40 @@ exports.run = async function () {
   await reopening;
   assert.equal(app.threads[0], existingThread, 'reopening the same diff preserves its comment instead of blinking');
   assert.equal(existingThread.collapsibleState, vscode.CommentThreadCollapsibleState.Expanded);
-  await Promise.all([app.open(step), app.open(app.getState().items[1].children[0])]);
+  await Promise.all([app.open(step), app.open(state().items[1].children[0])]);
   assert.equal(app.activeId, 'second-step', 'rapid clicks leave the latest item active');
   await app.open(step);
   const saving = app.toggle(step, true);
   assert.equal(app.getTreeItem(step).description, 'Saving review…', 'feedback appears before disk validation completes');
   assert.equal(app.getTreeItem(step).checkboxState, vscode.TreeItemCheckboxState.Checked);
   await saving;
-  let guide = JSON.parse(await fs.readFile(path.join(root, '.agr', 'fixture.json'), 'utf8'));
+  let guide = readGuide(await fs.readFile(path.join(root, '.agr', 'fixture.json'), 'utf8'));
   assert.equal(guide.groups[0].steps[0].review.status, 'reviewed', 'progress saved to guide');
   assert.ok(guide.groups[0].steps[0].review.fingerprint);
-  assert.equal(app.getState().items[0].children[0].checkboxState, vscode.TreeItemCheckboxState.Checked);
-  assert.notEqual(app.getTreeItem(app.getState().items[0].children[0]).description, 'Saving review…');
+  assert.equal(state().items[0].children[0].checkboxState, vscode.TreeItemCheckboxState.Checked);
+  assert.notEqual(app.getTreeItem(state().items[0].children[0]).description, 'Saving review…');
   await Promise.all([app.toggle(step, false), app.toggle(step, true)]);
-  guide = JSON.parse(await fs.readFile(path.join(root, '.agr', 'fixture.json'), 'utf8'));
+  guide = readGuide(await fs.readFile(path.join(root, '.agr', 'fixture.json'), 'utf8'));
   assert.equal(guide.groups[0].steps[0].review.status, 'reviewed', 'rapid toggles preserve the last requested state');
 
+  await vscode.commands.executeCommand('agr.steps.focus');
   await app.navigate(1);
   await app.toggle(undefined, true);
-  guide = JSON.parse(await fs.readFile(path.join(root, '.agr', 'fixture.json'), 'utf8'));
+  guide = readGuide(await fs.readFile(path.join(root, '.agr', 'fixture.json'), 'utf8'));
   assert.equal(guide.groups[1].steps[0].review.status, 'reviewed', 'next navigates within same file to second concern');
+  assert.match(app.view.message, /▰{10} 100% · 2 \/ 2 reviewed/);
   await fs.writeFile(path.join(root, 'feature.ts'), 'export const first = 100;\n\nexport const middle = 2;\n\nexport const last = 30;\n');
   await app.refresh();
-  assert.equal(app.getState().items[0].children[0].description, 'Needs another look');
-  assert.equal(app.getState().items[1].children[0].checkboxState, vscode.TreeItemCheckboxState.Checked, 'unrelated hunk remains reviewed');
-  assert.equal(app.getState().items[2].children.length, 1, 'edited hunk is uncovered');
-  await assert.rejects(app.toggle(app.getState().items[0].children[0], true), /changed/);
-  assert.equal(app.getTreeItem(app.getState().items[0].children[0]).checkboxState, vscode.TreeItemCheckboxState.Unchecked, 'failed saves roll back optimistic state');
-  assert.notEqual(app.getTreeItem(app.getState().items[0].children[0]).description, 'Saving review…');
+  assert.equal(state().items[0].children[0].description, 'Needs another look');
+  assert.equal(state().items[1].children[0].checkboxState, vscode.TreeItemCheckboxState.Checked, 'unrelated hunk remains reviewed');
+  assert.equal(state().items[2].children.length, 1, 'edited hunk is uncovered');
+  await assert.rejects(app.toggle(state().items[0].children[0], true), /changed/);
+  assert.equal(app.getTreeItem(state().items[0].children[0]).checkboxState, vscode.TreeItemCheckboxState.Unchecked, 'failed saves roll back optimistic state');
+  assert.notEqual(app.getTreeItem(state().items[0].children[0]).description, 'Saving review…');
 
   await fs.writeFile(path.join(root, 'new.ts'), 'one\ntwo\nthree\nfour\n');
   await app.refresh();
-  const added = app.getState().snapshot.changes.find(c => c.file === 'new.ts');
+  const added = state().snapshot.changes.find(c => c.file === 'new.ts');
   guide.groups.push({ id: 'split-file', title: 'Parts of a new file', steps: [
     { id: 'new-first', title: 'First half', note: 'Read the beginning.', changes: [added.id], selections: { [added.id]: { modified: { start: 1, end: 2 } } } },
     { id: 'new-last', title: 'Second half', note: 'Read the ending.', changes: [added.id], selections: { [added.id]: { modified: { start: 3, end: 4 } } } }
@@ -92,14 +117,14 @@ exports.run = async function () {
   // An editor buffer may still have the timestamp from before a progress save.
   await vscode.workspace.fs.writeFile(vscode.Uri.file(path.join(root, '.agr', 'fixture.json')), Buffer.from(JSON.stringify(guide, null, 2)));
   await app.refresh();
-  const lastPart = app.getState().items[2].children[1];
+  const lastPart = state().items[2].children[1];
   await app.open(lastPart);
   assert.ok(vscode.window.visibleTextEditors.some(editor => editor.document.uri.path === '/full/Working-tree/new.ts' && editor.selection.start.line === 2), 'second range opens directly at its first selected code line');
   assert.ok(vscode.window.visibleTextEditors.filter(editor => editor.document.uri.path === '/full/Working-tree/new.ts').every(editor => editor.selection.isEmpty), 'range navigation moves the cursor without a selection overlay');
   assert.ok(vscode.window.visibleTextEditors.filter(e => e.document.uri.path === '/full/Working-tree/new.ts').every(e => e.document.getText().includes('one\n') && e.document.getText().includes('two\n')), 'full file remains visible when reviewing a slice');
   await app.toggle(lastPart, true);
-  assert.equal(app.getState().items[2].children[0].checkboxState, vscode.TreeItemCheckboxState.Unchecked, 'first slice remains pending');
-  assert.equal(app.getState().items[2].children[1].checkboxState, vscode.TreeItemCheckboxState.Checked, 'second slice is reviewed');
+  assert.equal(state().items[2].children[0].checkboxState, vscode.TreeItemCheckboxState.Unchecked, 'first slice remains pending');
+  assert.equal(state().items[2].children[1].checkboxState, vscode.TreeItemCheckboxState.Checked, 'second slice is reviewed');
 
   const { execFileSync } = require('node:child_process');
   const helper = path.resolve(__dirname, '../dist/skill/scripts/agr.cjs');
@@ -115,20 +140,20 @@ exports.run = async function () {
       groups: [{ id: 'scoped', title: 'Stages', steps: scope.comparisons.map(c => ({ id: c.id, title: c.id, note: 'Review this version.', changes: snapshot.changes.filter(change => change.comparisonId === c.id).map(change => change.id) })) }] };
     await vscode.workspace.fs.writeFile(vscode.Uri.file(path.join(root, '.agr', 'fixture.json')), Buffer.from(JSON.stringify(scopedGuide)));
     await app.refresh();
-    assert.equal(app.getState().guide.comparison, 'scoped');
-    assert.equal(app.getState().items.length, 1, 'scoped coverage excludes unrelated local files');
+    assert.equal(state().guide.comparison, 'scoped');
+    assert.equal(state().items.length, 1, 'scoped coverage excludes unrelated local files');
   }
   await loadScope({ comparisons: [{ id: 'stage', kind: 'staged', paths: ['feature.ts'] }, { id: 'work', kind: 'unstaged', paths: ['feature.ts'] }] });
-  await app.open(app.getState().items[0].children[0]);
+  await app.open(state().items[0].children[0]);
   assert.ok(vscode.window.visibleTextEditors.some(e => e.document.uri.path === '/full/stage/Index/feature.ts' && e.document.getText().includes('first = 100;')), 'staged diff shows index bytes');
-  await app.open(app.getState().items[0].children[1]);
+  await app.open(state().items[0].children[1]);
   assert.ok(vscode.window.visibleTextEditors.some(e => e.document.uri.path === '/full/work/Working-tree/feature.ts' && e.document.getText().includes('first = 1000;')), 'unstaged diff shows working bytes');
-  await app.toggle(app.getState().items[0].children[0], true);
-  assert.equal(app.getState().items[0].children[0].checkboxState, vscode.TreeItemCheckboxState.Checked);
+  await app.toggle(state().items[0].children[0], true);
+  assert.equal(state().items[0].children[0].checkboxState, vscode.TreeItemCheckboxState.Checked);
   git('commit', '-qm', 'commit staged version');
   const committed = git('rev-parse', 'HEAD');
   await loadScope({ comparisons: [{ id: 'history', kind: 'revisions', base: baseCommit, head: committed }] });
-  await app.open(app.getState().items[0].children[0]);
+  await app.open(state().items[0].children[0]);
   assert.ok(vscode.window.visibleTextEditors.some(e => e.document.uri.path === `/full/history/${committed.slice(0, 8)}/feature.ts` && e.document.getText().includes('first = 100;')), 'committed review ignores unrelated dirty worktree bytes');
 
   // Fake the transport only: exercise saved progress, queueing and disconnection
@@ -137,7 +162,7 @@ exports.run = async function () {
   assert.ok(commands.includes('agr.connectGitHub'));
   assert.ok(commands.includes('agr.disconnectGitHub'));
   const syncKey = app.githubKey(root, 'fixture.json');
-  await app.context.workspaceState.update(syncKey, { pr: { repo: 'test/repo', number: 1 }, base: app.getState().guide.base });
+  await app.context.workspaceState.update(syncKey, { pr: { repo: 'test/repo', number: 1 }, base: state().guide.base });
   let releaseRequest;
   let gate = new Promise(resolve => { releaseRequest = resolve; });
   const mutations = [];
@@ -148,24 +173,24 @@ exports.run = async function () {
     if (args[1].includes('/compare/')) return { merge_base_commit: { sha: baseCommit } };
     return { state: 'open', node_id: 'fake-pr', head: { sha: committed }, base: { sha: baseCommit }, changed_files: 1 };
   };
-  await app.toggle(app.getState().items[0].children[0], true);
-  assert.equal(app.getState().items[0].children[0].checkboxState, vscode.TreeItemCheckboxState.Checked, 'local save completes while GitHub is blocked');
+  await app.toggle(state().items[0].children[0], true);
+  assert.equal(state().items[0].children[0].checkboxState, vscode.TreeItemCheckboxState.Checked, 'local save completes while GitHub is blocked');
   assert.equal(mutations.length, 0);
   releaseRequest(); await app.githubQueue;
   assert.match(mutations[0], /\{ markFileAsViewed/);
-  await Promise.all([app.toggle(app.getState().items[0].children[0], false), app.toggle(app.getState().items[0].children[0], true)]);
+  await Promise.all([app.toggle(state().items[0].children[0], false), app.toggle(state().items[0].children[0], true)]);
   // Superseded jobs may enqueue a fresh read behind the current tail.
   for (let tail; tail !== app.githubQueue;) { tail = app.githubQueue; await tail; }
   assert.match(mutations.at(-1), /\{ markFileAsViewed/, 'rapid toggles end at the latest saved state');
   gate = new Promise(resolve => { releaseRequest = resolve; });
-  await app.toggle(app.getState().items[0].children[0], false);
+  await app.toggle(state().items[0].children[0], false);
   await app.disconnectGitHub();
   const beforeDisconnect = mutations.length;
   releaseRequest(); await app.githubQueue;
   assert.equal(mutations.length, beforeDisconnect, 'disconnect cancels queued writes');
 
   const metadataFile = path.join(root, '.agr', 'fixture.json');
-  const metadataGuide = JSON.parse(await fs.readFile(metadataFile, 'utf8'));
+  const metadataGuide = readGuide(await fs.readFile(metadataFile, 'utf8'));
   metadataGuide.pullRequestUrl = 'https://github.com/test/repo/pull/1';
   let promptCount = 0;
   let answer = 'Keep local';
@@ -209,66 +234,75 @@ exports.run = async function () {
   // Two guides deliberately share step IDs: identity and writes must stay isolated.
   const firstFile = path.join(root, '.agr', 'fixture.json');
   const firstBefore = await fs.readFile(firstFile, 'utf8');
-  const alternate = JSON.parse(firstBefore);
+  const alternate = readGuide(firstBefore);
   alternate.title = 'Second review';
   for (const group of alternate.groups) for (const entry of group.steps) entry.review = { status: 'pending' };
   const secondFile = path.join(root, '.agr', 'second.json');
   await fs.writeFile(secondFile, JSON.stringify(alternate));
   await fs.writeFile(path.join(root, 'agr.json'), '{"not":"a supported guide"}');
   await app.refresh();
-  assert.deepEqual(app.getState().reviews.map(review => review.file), ['fixture.json', 'second.json']);
-  const oldItem = app.getState().items[0].children[0];
+  assert.deepEqual(state().reviews.map(review => review.file), ['fixture.json', 'second.json']);
+  const oldItem = state().items[0].children[0];
   await app.selectReview('second.json');
-  assert.equal(app.getState().reviewFile, 'second.json');
-  assert.equal(app.getState().items[0].children[0].checkboxState, vscode.TreeItemCheckboxState.Unchecked);
+  assert.equal(state().reviewFile, 'second.json');
+  assert.equal(state().items[0].children[0].checkboxState, vscode.TreeItemCheckboxState.Unchecked);
   await assert.rejects(app.toggle(oldItem, true), /active review changed/);
   await assert.rejects(app.open(oldItem), /active review changed/);
-  await app.open(app.getState().items[0].children[0]);
-  const savingSecond = app.toggle(app.getState().items[0].children[0], true);
+  await app.open(state().items[0].children[0]);
+  const savingSecond = app.toggle(state().items[0].children[0], true);
   const switching = app.selectReview('fixture.json');
   await Promise.all([savingSecond, switching]);
   assert.equal(await fs.readFile(firstFile, 'utf8'), firstBefore, 'switching never writes progress to another guide');
-  assert.equal(JSON.parse(await fs.readFile(secondFile, 'utf8')).groups[0].steps[0].review.status, 'reviewed');
+  assert.equal(readGuide(await fs.readFile(secondFile, 'utf8')).groups[0].steps[0].review.status, 'reviewed');
   await app.selectReview('second.json'); await app.refresh();
-  assert.equal(app.getState().reviewFile, 'second.json', 'refresh keeps the selected review');
-  assert.equal(app.getState().items[0].children[0].checkboxState, vscode.TreeItemCheckboxState.Checked);
+  assert.equal(state().reviewFile, 'second.json', 'refresh keeps the selected review');
+  assert.equal(state().items[0].children[0].checkboxState, vscode.TreeItemCheckboxState.Checked);
 
   const badFile = path.join(root, '.agr', 'broken.json');
   await fs.writeFile(badFile, '{'); await app.refresh();
   await app.selectReview('broken.json');
-  assert.equal(app.getState().snapshot, undefined, 'invalid guides never reuse another guide snapshot');
+  assert.equal(state().snapshot, undefined, 'invalid guides never reuse another guide snapshot');
   assert.match(app.view.message, /Guide error/);
   await app.selectReview('second.json');
-  assert.ok(app.getState().snapshot, 'an invalid guide does not block another review');
+  assert.ok(state().snapshot, 'an invalid guide does not block another review');
   const unavailable = structuredClone(alternate);
   unavailable.scope.comparisons[0].head = 'a'.repeat(40);
   await fs.writeFile(path.join(root, '.agr', 'missing-commits.json'), JSON.stringify(unavailable));
   await app.refresh(); await app.selectReview('missing-commits.json');
-  assert.equal(app.getState().snapshot, undefined);
-  assert.equal(app.getState().guide.title, 'Second review', 'notes remain accessible when commits are missing');
-  assert.ok(app.getState().items[0].children[0].tooltip.value);
-  assert.equal(app.getState().items[0].children[0].command, undefined, 'unavailable steps cannot be opened or approved');
+  assert.equal(state().snapshot, undefined);
+  assert.equal(state().guide.title, 'Second review', 'notes remain accessible when commits are missing');
+  assert.ok(state().items[0].children[0].tooltip.value);
+  assert.equal(state().items[0].children[0].command, undefined, 'unavailable steps cannot be opened or approved');
   await app.selectReview('second.json');
   await fs.unlink(secondFile); await fs.unlink(badFile);
   await fs.unlink(path.join(root, '.agr', 'missing-commits.json'));
   await app.refresh();
-  assert.equal(app.getState().reviewFile, 'fixture.json', 'deleting a selected guide chooses the remaining review');
+  assert.equal(state().reviewFile, 'fixture.json', 'deleting a selected guide chooses the remaining review');
 
   await loadScope({ comparisons: [{ id: 'legacy', kind: 'working-tree', paths: ['feature.ts', 'new.ts'] }] });
-  const splitItems = app.getState().items[0].children;
+  assert.equal(app.getState().items[0].children.length, 1, 'split files share a change group');
+  assert.equal(app.getState().items[0].children[0].children.length, 2, 'each file is independently checkable');
+  const splitItems = state().items[0].children;
   assert.equal(splitItems.length, 2, 'old multi-file steps become separate review entries');
-  const migrated = JSON.parse(await fs.readFile(firstFile, 'utf8'));
+  const wire = JSON.parse(await fs.readFile(firstFile, 'utf8'));
+  assert.equal(wire.version, 2);
+  assert.equal(wire.groups[0].changes[0].files.length, 2);
+  assert.equal(wire.groups[0].steps, undefined);
+  const validation = JSON.parse(execFileSync('node', [helper, 'validate', root, 'fixture.json'], { encoding: 'utf8' }));
+  assert.deepEqual(validation.reviews[0].invalidSelections, []);
+  assert.deepEqual(validation.reviews[0].missing, []);
+  const migrated = readGuide(await fs.readFile(firstFile, 'utf8'));
   assert.equal(migrated.groups[0].steps.length, 2, 'split entries are saved to the actual plan');
   const afterMigration = await fs.readFile(firstFile, 'utf8');
   await app.refresh();
   assert.equal(await fs.readFile(firstFile, 'utf8'), afterMigration, 'refresh does not repeatedly rewrite a split guide');
-  for (const item of app.getState().items[0].children) {
+  for (const item of state().items[0].children) {
     await app.open(item);
-    const files = new Set(app.getState().snapshot.changes.filter(c => item.step.changes.includes(c.id)).map(c => c.file));
+    const files = new Set(state().snapshot.changes.filter(c => item.step.changes.includes(c.id)).map(c => c.file));
     assert.equal(files.size, 1);
   }
-  await app.toggle(app.getState().items[0].children[0], true);
-  assert.equal(app.getState().items[0].children[1].checkboxState, vscode.TreeItemCheckboxState.Unchecked, 'split entries have independent progress');
+  await app.toggle(state().items[0].children[0], true);
+  assert.equal(state().items[0].children[1].checkboxState, vscode.TreeItemCheckboxState.Unchecked, 'split entries have independent progress');
 
   await app.installSkill('repository');
   for (const folder of ['.agents', '.claude']) {

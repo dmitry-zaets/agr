@@ -32,7 +32,7 @@ Give your agent a PR link, branch name, or description of what you want reviewed
 
 ## Progress that follows the changes
 
-A file can appear in multiple steps. Each opens the complete native file diff at its relevant lines, while highlighting and review progress remain scoped to that step. Your notes and review progress are saved in `.agr/<name>.json`. Changed code, notes, or comparison baselines can require another review. Uncovered changes within the guide's scope appear under **Unguided changes**.
+The sidebar nests checkable filenames under numbered sections and change groups, with a progress bar above the list. A file can appear in multiple steps. Each opens the complete native file diff at its relevant lines, while highlighting and review progress remain scoped to that step. Your notes and review progress are saved in `.agr/<name>.json`. Changed code, notes, or comparison baselines can require another review. Uncovered changes within the guide's scope appear under **Unguided changes**.
 
 PR and branch reviews pin their commits. Ask the agent to regenerate the guide after remote updates. Default local comparisons follow HEAD. Diffs show saved snapshots; reopen a step to see newer saved edits. Unsaved buffers are excluded. Binary changes are listed for inspection in another viewer.
 
@@ -65,3 +65,7 @@ If no review appears, check that the guide is saved directly inside `.agr/` in t
 [Usage and troubleshooting](https://github.com/dmitry-zaets/agr/blob/main/docs/usage.md) · [Source and issues](https://github.com/dmitry-zaets/agr) · [MIT license](https://github.com/dmitry-zaets/agr/blob/main/LICENSE)
 
 AGR offers to update existing agent skills when the bundled skill content changes. Use **AGR: Update Agent Skills** to check manually. Choose the copies to update; the original folders are backed up outside the skill-discovery directories.
+
+## Upgrading from AGR 1.x
+
+AGR 2.0 uses nested version 2 guides. Run **AGR: Update Agent Skills** after updating the extension. Existing version 1 guides migrate in place when their changes can be resolved, preserving valid approvals. Older extensions and helpers cannot read version 2 guides. See the [migration guide](https://github.com/dmitry-zaets/agr/blob/main/docs/migrating-to-v2.md).

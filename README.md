@@ -25,6 +25,10 @@ Requires VS Code 1.95+, Git, Node.js 22+ for the skill helper, and Claude Code o
 
 For repository installation, the command copies the skill to `.claude/skills/agr/` and `.agents/skills/agr/`. Start a fresh agent session if the skill is not discovered. Existing skill installations are not overwritten; see [updating skills](docs/usage.md#updating-skills).
 
+## Upgrading from AGR 1.x
+
+AGR 2.0 introduces nested version 2 guides and a progress bar. Update your agent skills as well as the extension. Resolvable version 1 guides migrate automatically, preserving valid approvals. Older extensions cannot read version 2 guides. See the [migration guide](docs/migrating-to-v2.md).
+
 ## Choose what to review
 
 Ask the agent for the scope you need:

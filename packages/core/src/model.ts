@@ -32,6 +32,8 @@ export interface Snapshot {
   changes: Change[];
 }
 export interface Step {
+  file?: string;
+  changeGroup?: { id: string; title: string };
   id: string;
   title: string;
   note: string;
@@ -77,7 +79,27 @@ export function parseScope(value: unknown): Scope {
 }
 
 export function parseGuide(text: string): Guide {
-  const g = JSON.parse(text);
+  let g = JSON.parse(text);
+  if (g?.version === 2) {
+    const ids = new Set<string>();
+    if (!Array.isArray(g.groups)) throw new Error('Invalid review guide: groups must be an array.');
+    g = { ...g, version: 1, groups: g.groups.map((section: any) => {
+      if (!section || !Array.isArray(section.changes) || section.steps !== undefined) throw new Error('Invalid review guide: sections need changes.');
+      const steps = section.changes.flatMap((change: any) => {
+        if (!change || typeof change.id !== 'string' || !change.id.trim() || ids.has(change.id) || typeof change.title !== 'string' || !change.title.trim() || !Array.isArray(change.files) || !change.files.length) throw new Error('Invalid review guide: changes need unique id, title, and files.');
+        ids.add(change.id);
+        return change.files.map((file: any) => {
+          if (!file || typeof file.file !== 'string' || !file.file || file.file.startsWith('/') || file.file.includes('\\') || file.file.includes('\0') || file.file.split('/').includes('..')) throw new Error('Invalid review guide: each file needs a repository-relative path.');
+          return { ...file, title: file.title ?? change.title, changeGroup: { id: change.id, title: change.title } };
+        });
+      });
+      const { changes, ...rest } = section;
+      return { ...rest, steps };
+    }) };
+    for (const section of g.groups) for (const entry of [section, ...section.steps]) {
+      if (ids.has(entry.id)) throw new Error(`Invalid review guide: duplicate id ${entry.id}.`);
+    }
+  }
   const fail = (message: string): never => { throw new Error(`Invalid review guide: ${message}`); };
   const string = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
   if (!g || g.version !== 1 || !string(g.title) || !['head-to-working-tree', 'scoped'].includes(g.comparison)) {
@@ -109,6 +131,8 @@ export function parseGuide(text: string): Guide {
           }
         }
       }
+      if (step.file !== undefined && (typeof step.file !== 'string' || !step.file || step.file.startsWith('/') || step.file.includes('\\') || step.file.includes('\0') || step.file.split('/').includes('..'))) fail(`${step.id}: file must be repository-relative.`);
+      if (step.changeGroup !== undefined && (!step.changeGroup || !string(step.changeGroup.id) || !string(step.changeGroup.title))) fail(`${step.id}: invalid change group.`);
       if (step.focus !== undefined && typeof step.focus !== 'string') fail(`${step.id}: focus must be text.`);
       if (step.optional !== undefined && typeof step.optional !== 'boolean') fail(`${step.id}: optional must be boolean.`);
       if (step.review !== undefined && (!step.review || !['pending', 'reviewed'].includes(step.review.status))) fail(`${step.id}: invalid review status.`);
@@ -120,12 +144,12 @@ export function parseGuide(text: string): Guide {
 
 // Review approval is tied to both the code and the explanation the user saw.
 export function stepFingerprint(step: Step, snapshot: Snapshot): string {
-  return hash(JSON.stringify([snapshot.base, step.id, step.title, step.note, step.focus, step.optional, [...step.changes].sort(), Object.entries(step.selections ?? {}).sort(([a], [b]) => a.localeCompare(b))]));
+  return hash(JSON.stringify([snapshot.base, step.id, step.title, step.note, step.focus, step.optional, ...(step.changeGroup ? [step.changeGroup.title, step.file] : []), [...step.changes].sort(), Object.entries(step.selections ?? {}).sort(([a], [b]) => a.localeCompare(b))]));
 }
 export function selectedChanges(step: Step, snapshot: Snapshot): Change[] {
   return step.changes.flatMap(id => {
     const change = snapshot.changes.find(c => c.id === id);
-    if (!change) return [];
+    if (!change || (step.file !== undefined && step.file !== change.file)) return [];
     const selection = step.selections?.[id];
     if (!selection) return [change];
     const { original, modified } = selection;
@@ -211,4 +235,51 @@ export function splitFileSteps(guide: Guide, snapshot: Snapshot): Guide {
     }).flat();
   }) }));
   return changed ? { ...guide, groups } : guide;
+}
+
+/** Persist explicit section -> change -> file nesting; the core operates on file leaves. */
+export function serializeGuide(guide: Guide): string {
+  if (allSteps(guide).some(step => !step.changeGroup || !step.file)) return JSON.stringify(guide, null, 2) + '\n';
+  const groups = guide.groups.map(section => {
+    const changes: { id: string; title: string; files: Omit<Step, 'changeGroup'>[] }[] = [];
+    for (const step of section.steps) {
+      let change = changes.find(c => c.id === step.changeGroup!.id);
+      if (!change) { change = { ...step.changeGroup!, files: [] }; changes.push(change); }
+      const { changeGroup, ...file } = step;
+      change.files.push(file);
+    }
+    const { steps, ...rest } = section;
+    return { ...rest, changes };
+  });
+  return JSON.stringify({ ...guide, version: 2, groups }, null, 2) + '\n';
+}
+
+/** Migrate existing plans without losing valid per-file review approvals. */
+export function nestGuide(guide: Guide, snapshot: Snapshot): Guide {
+  if (allSteps(guide).every(step => step.changeGroup && step.file)) return guide;
+  const split = splitFileSteps(guide, snapshot);
+  const current = new Map(snapshot.changes.map(c => [c.id, c]));
+  // Missing changes cannot be assigned a trustworthy filename.
+  if (allSteps(split).some(s => s.changes.some(id => !current.has(id)))) return split;
+  const used = new Set([...split.groups.map(g => g.id), ...allSteps(split).map(s => s.id)]);
+  return { ...split, groups: split.groups.map(section => {
+    const titles = new Map<string, { id: string; title: string }>();
+    const steps = section.steps.map(step => {
+      const file = current.get(step.changes[0])!.file;
+      const suffix = ` · ${file}`;
+      const offset = step.title.lastIndexOf(suffix);
+      const tail = offset >= 0 ? step.title.slice(offset + suffix.length) : undefined;
+      const title = (tail === '' || /^ \[.*\]$/.test(tail ?? '') ? step.title.slice(0, offset) : step.title).replace(/^\s*\d+(?:\.\d+)*[.)]?\s+/, '');
+      let changeGroup = titles.get(title);
+      if (!changeGroup) {
+        let id = `${section.id}-change-${hash(title).slice(0, 12)}`;
+        while (used.has(id)) id += '-group';
+        used.add(id); changeGroup = { id, title }; titles.set(title, changeGroup);
+      }
+      const child: Step = { ...step, file, changeGroup };
+      if (stepState(step, snapshot, guide.base) === 'reviewed') child.review = { ...step.review!, fingerprint: stepFingerprint(child, snapshot) };
+      return child;
+    });
+    return { ...section, steps };
+  }) };
 }

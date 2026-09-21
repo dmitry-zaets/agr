@@ -30,3 +30,7 @@ The guide and snapshot are local artifacts excluded from their own review. To ke
 ## Multiple reviews
 
 Each `.agr/*.json` file has independent progress. Switching reviews clears the previous review’s comments and range markers. A stale local guide keeps its notes, but opening an outdated step requires regeneration. If pinned Git objects are missing, the review remains listed as unavailable; fetch the commits or open the guide to read its notes. AGR does not archive old local file contents.
+
+## Nested review format
+
+Version 2 stores `groups[].changes[].files[]`. Sections and change groups define navigation; file entries own notes, selected hunks/ranges, and review state. Each file entry includes its repository-relative `file` and references exactly one file/comparison. The extension reads version 1 plans and upgrades resolvable plans on refresh. It preserves valid approvals and leaves stale or missing changes unapproved. Agents should generate version 2 directly.
