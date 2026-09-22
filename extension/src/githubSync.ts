@@ -19,7 +19,7 @@ export function github(root: string): Gh {
       return JSON.parse(stdout);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      throw new Error(code === 'ENOENT' ? 'Install GitHub CLI (gh) and run gh auth login first.' : 'GitHub sync failed. Check gh auth status, repository access, and your connection, then retry.');
+      throw new Error(code === 'ENOENT' ? 'Install GitHub CLI (gh) and run gh auth login first.' : 'GitHub request failed. Check gh auth status, repository access, and your connection, then retry.');
     }
   };
 }

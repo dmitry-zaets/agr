@@ -29,6 +29,12 @@ For repository installation, the command copies the skill to `.claude/skills/agr
 
 AGR 2.0 introduces nested version 2 guides and a progress bar. Update your agent skills as well as the extension. Resolvable version 1 guides migrate automatically, preserving valid approvals. Older extensions cannot read version 2 guides. See the [migration guide](docs/migrating-to-v2.md).
 
+## GitHub discussions
+
+For PR guides, use **Load GitHub comments** to show existing review threads in the native diff. Post inline comments and replies, edit your own comments, and open outdated discussions on GitHub. Each post publishes immediately; this does not create a pending review or submit an approval. See [usage](docs/usage.md#github-comments).
+
+The sidebar keeps a short description above the list, with an **Open PR** action and a rich Markdown overview for the full context.
+
 ## Choose what to review
 
 Ask the agent for the scope you need:

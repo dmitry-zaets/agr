@@ -69,3 +69,9 @@ AGR offers to update existing agent skills when the bundled skill content change
 ## Upgrading from AGR 1.x
 
 AGR 2.0 uses nested version 2 guides. Run **AGR: Update Agent Skills** after updating the extension. Existing version 1 guides migrate in place when their changes can be resolved, preserving valid approvals. Older extensions and helpers cannot read version 2 guides. See the [migration guide](https://github.com/dmitry-zaets/agr/blob/main/docs/migrating-to-v2.md).
+
+## GitHub discussions
+
+Select **Load GitHub comments** for a pinned PR guide to see existing threads in the native diff. Post individual inline comments and replies, or edit your own comments. Each **Post to GitHub** or **Save to GitHub** action publishes immediately; AGR does not submit an approval or create a pending review. Use **Refresh GitHub Comments** for updates and **Browse GitHub Discussions** for outdated threads.
+
+The sidebar includes an **Open PR** link, a short spaced description, and a full Markdown overview.

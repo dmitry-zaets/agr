@@ -20,10 +20,18 @@ exports.run = async function () {
   // Existing behavior checks operate on file leaves within each section.
   const state = () => {
     const result = app.getState();
-    return { ...result, items: result.items.map(section => ({ ...section,
+    return { ...result, items: result.items.filter(item => !['overview', 'prLink', 'githubComments'].includes(item.contextValue)).map(section => ({ ...section,
       children: section.children.flatMap(item => item.children.length ? item.children : [item]) })) };
   };
-  const section = app.getState().items[0];
+  const overview = app.getState().items.find(item => item.contextValue === 'overview');
+  assert.equal(overview.collapsibleState, vscode.TreeItemCollapsibleState.Collapsed);
+  assert.equal(overview.children[0].label, 'Scope');
+  assert.ok(!app.view.message.includes('Uncommitted changes'), 'scope stays out of progress header');
+  assert.ok(app.view.message.includes('\n\nFixture summary'), 'short description is spaced apart from progress');
+  const summary = overview.children.find(item => item.label === 'Read summary');
+  assert.ok(summary);
+  assert.equal(summary.command.command, 'agr.showOverview');
+  const section = app.getState().items.find(item => !['overview', 'prLink', 'githubComments'].includes(item.contextValue));
   assert.equal(section.label, '1 First concern');
   assert.match(app.view.message, /▱{10} 0% · 0 \/ 2 reviewed/);
   assert.equal(section.children[0].label, '1.1 Change first value');
@@ -280,8 +288,8 @@ exports.run = async function () {
   assert.equal(state().reviewFile, 'fixture.json', 'deleting a selected guide chooses the remaining review');
 
   await loadScope({ comparisons: [{ id: 'legacy', kind: 'working-tree', paths: ['feature.ts', 'new.ts'] }] });
-  assert.equal(app.getState().items[0].children.length, 1, 'split files share a change group');
-  assert.equal(app.getState().items[0].children[0].children.length, 2, 'each file is independently checkable');
+  assert.equal(app.getState().items.find(item => !['overview', 'prLink', 'githubComments'].includes(item.contextValue)).children.length, 1, 'split files share a change group');
+  assert.equal(app.getState().items.find(item => !['overview', 'prLink', 'githubComments'].includes(item.contextValue)).children[0].children.length, 2, 'each file is independently checkable');
   const splitItems = state().items[0].children;
   assert.equal(splitItems.length, 2, 'old multi-file steps become separate review entries');
   const wire = JSON.parse(await fs.readFile(firstFile, 'utf8'));
@@ -303,6 +311,61 @@ exports.run = async function () {
   }
   await app.toggle(state().items[0].children[0], true);
   assert.equal(state().items[0].children[1].checkboxState, vscode.TreeItemCheckboxState.Unchecked, 'split entries have independent progress');
+
+
+  // GitHub comment UI uses a fake transport. No requests reach GitHub.
+  const commentUi = app.githubComments;
+  commentUi.reset();
+  const commentGuide = { version: 1, title: 'Comments', comparison: 'scoped', base: 'f'.repeat(64), groups: [], scope: { comparisons: [{ id: 'pr', kind: 'revisions', base: 'a'.repeat(40), head: 'b'.repeat(40) }] } };
+  const commentPr = { repo: 'test/repo', number: 1 };
+  let remoteBody = 'Original **comment**', failPost = false;
+  const writes = [];
+  const remoteThreads = [{ id: 'thread-1', path: 'comment.ts', line: 2, startLine: null, diffSide: 'RIGHT', startDiffSide: null, isOutdated: false, isResolved: true, comments: { nodes: [{ databaseId: 7, body: remoteBody, url: 'https://github.com/test/repo/pull/1#discussion_r7', author: { login: 'me' }, viewerDidAuthor: true }], pageInfo: { hasNextPage: false } } },
+    { id: 'thread-old', path: 'comment.ts', line: 1, diffSide: 'RIGHT', isOutdated: true, isResolved: false, comments: { nodes: [{ databaseId: 9, body: 'Old', author: { login: 'other' } }], pageInfo: { hasNextPage: false } } }];
+  const transport = async args => {
+    if (args[1] === 'graphql') return { data: { repository: { pullRequest: { headRefOid: 'b'.repeat(40), reviewThreads: { nodes: remoteThreads, pageInfo: { hasNextPage: false } } } } } };
+    if (args.includes('-X')) {
+      if (failPost) throw new Error('Connection failed');
+      writes.push(args);
+      const body = args.find(a => a.startsWith('body=')).slice(5);
+      if (args.includes('PATCH')) remoteBody = body;
+      return { id: args.includes('PATCH') ? 7 : 8, body, html_url: 'https://github.com/test/repo/pull/1#discussion_r8', user: { login: 'me' } };
+    }
+    if (args[1] === 'user') return { login: 'me' };
+    if (args[1] === 'repos/test/repo/pulls/comments/7') return { user: { login: 'me' }, body: remoteBody, pull_request_url: 'https://api.github.com/repos/test/repo/pulls/1' };
+    if (args[1] === 'repos/test/repo/pulls/1') return { state: 'open', node_id: 'PR', head: { sha: 'b'.repeat(40) }, base: { sha: 'a'.repeat(40) }, changed_files: 1 };
+    if (args[1]?.includes('/compare/')) return { merge_base_commit: { sha: 'a'.repeat(40) } };
+    if (args.includes('--paginate')) return [[{ filename: 'comment.ts' }]];
+    throw new Error('Unexpected comment request: ' + args[1]);
+  };
+  const leftCommentUri = app.virtual('comment.ts', 'test-original', 'old\nold\n');
+  const rightCommentUri = app.virtual('comment.ts', 'test-modified', 'new\nnew\n');
+  commentUi.attach('comment.ts', leftCommentUri, rightCommentUri, 'old\nold\n', 'new\nnew\n', [{ id: 'c_test', file: 'comment.ts', kind: 'text', oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, patch: '' }], commentGuide);
+  await commentUi.load({ gh: transport, pr: commentPr, guide: commentGuide, current: async () => true });
+  assert.equal(commentUi.threads.size, 1, 'outdated thread is not attached to current code');
+  const githubThread = [...commentUi.threads.keys()][0];
+  assert.equal(githubThread.label, 'GitHub · Resolved');
+  assert.equal(githubThread.comments[0].body.isTrusted, false);
+  assert.equal(githubThread.comments[0].contextValue, 'agrGithubOwn');
+  const ownComment = githubThread.comments[0];
+  commentUi.edit(ownComment);
+  ownComment.body = 'Edited **Markdown**';
+  await commentUi.save(ownComment);
+  assert.equal(ownComment.mode, vscode.CommentMode.Preview);
+  assert.equal(remoteBody, 'Edited **Markdown**');
+  await commentUi.post({ thread: githubThread, text: 'A reply' });
+  assert.equal(githubThread.comments.length, 2);
+  assert.ok(writes[1][1].endsWith('/7/replies'));
+  const fresh = commentUi.controller.createCommentThread(rightCommentUri, new vscode.Range(0, 0, 1, 0), []);
+  failPost = true;
+  await assert.rejects(commentUi.post({ thread: fresh, text: 'Keep this draft' }), /text remains/);
+  assert.equal(fresh.comments.length, 0);
+  failPost = false;
+  await Promise.all([commentUi.post({ thread: fresh, text: 'New inline' }), commentUi.post({ thread: fresh, text: 'New inline' })]);
+  assert.equal(writes.filter(args => args.includes('line=2')).length, 1, 'double-click posts once');
+  assert.equal(fresh.comments.length, 1);
+  commentUi.reset();
+  assert.equal(commentUi.threads.size, 0);
 
   await app.installSkill('repository');
   for (const folder of ['.agents', '.claude']) {

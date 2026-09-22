@@ -115,6 +115,62 @@
         "command": "agr.updateSkills",
         "title": "Update Agent Skills",
         "category": "AGR"
+      },
+      {
+        "command": "agr.openPullRequest",
+        "title": "Open Pull Request",
+        "category": "AGR",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "agr.loadComments",
+        "title": "Load GitHub Comments",
+        "category": "AGR",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "agr.refreshComments",
+        "title": "Refresh GitHub Comments",
+        "category": "AGR",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "agr.browseComments",
+        "title": "Browse GitHub Discussions",
+        "category": "AGR",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "agr.postComment",
+        "title": "Post to GitHub",
+        "category": "AGR",
+        "enablement": "!commentIsEmpty"
+      },
+      {
+        "command": "agr.editComment",
+        "title": "Edit GitHub Comment",
+        "category": "AGR",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "agr.saveComment",
+        "title": "Save to GitHub",
+        "category": "AGR"
+      },
+      {
+        "command": "agr.cancelCommentEdit",
+        "title": "Cancel Edit",
+        "category": "AGR"
+      },
+      {
+        "command": "agr.showOverview",
+        "title": "Show Review Overview",
+        "category": "AGR"
+      },
+      {
+        "command": "agr.addComment",
+        "title": "Add GitHub Comment",
+        "category": "AGR"
       }
     ],
     "menus": {
@@ -158,6 +214,26 @@
           "command": "agr.disconnectGitHub",
           "when": "view == agr.steps",
           "group": "github"
+        },
+        {
+          "command": "agr.openPullRequest",
+          "when": "view == agr.steps",
+          "group": "github"
+        },
+        {
+          "command": "agr.loadComments",
+          "when": "view == agr.steps",
+          "group": "github"
+        },
+        {
+          "command": "agr.refreshComments",
+          "when": "view == agr.steps",
+          "group": "github"
+        },
+        {
+          "command": "agr.browseComments",
+          "when": "view == agr.steps",
+          "group": "github"
         }
       ],
       "view/item/context": [
@@ -165,6 +241,57 @@
           "command": "agr.toggle",
           "when": "view == agr.steps && viewItem == step",
           "group": "inline"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "agr.postComment",
+          "when": "commentController == agr-github",
+          "group": "inline"
+        }
+      ],
+      "comments/comment/title": [
+        {
+          "command": "agr.editComment",
+          "when": "commentController == agr-github && comment == agrGithubOwn",
+          "group": "inline"
+        }
+      ],
+      "comments/comment/context": [
+        {
+          "command": "agr.saveComment",
+          "when": "commentController == agr-github && comment == agrGithubOwn",
+          "group": "inline"
+        },
+        {
+          "command": "agr.cancelCommentEdit",
+          "when": "commentController == agr-github && comment == agrGithubOwn",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "agr.postComment",
+          "when": "false"
+        },
+        {
+          "command": "agr.editComment",
+          "when": "false"
+        },
+        {
+          "command": "agr.saveComment",
+          "when": "false"
+        },
+        {
+          "command": "agr.cancelCommentEdit",
+          "when": "false"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "agr.addComment",
+          "when": "resourceScheme == agr",
+          "group": "navigation"
         }
       ]
     },

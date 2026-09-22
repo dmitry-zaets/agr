@@ -17,7 +17,7 @@ async function main() {
   const snapshot = JSON.parse(execFileSync(process.execPath, [helper, 'snapshot', root], { encoding: 'utf8' }));
   await require('node:fs/promises').mkdir(path.join(root, '.agr', '.cache'), { recursive: true });
   await writeFile(path.join(root, '.agr', 'fixture.json'), JSON.stringify({
-    version: 1, title: 'Fixture review', comparison: 'head-to-working-tree', base: snapshot.base,
+    version: 1, title: 'Fixture review', summary: 'Fixture summary with context that belongs in the overview.', comparison: 'head-to-working-tree', base: snapshot.base,
     groups: [{ id: 'first', title: 'First concern', steps: [{ id: 'first-step', title: 'Change first value', note: 'Review the first concern.\nKeep [links](command:untrusted) as text.', focus: 'Check the new value.', changes: [snapshot.changes[0].id] }] },
       { id: 'second', title: 'Second concern', steps: [{ id: 'second-step', title: 'Change last value', note: 'Review the second concern.', changes: [snapshot.changes[1].id] }] }]
   }, null, 2));

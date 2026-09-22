@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import { overviewHtml, summaryExcerpt } from './overview';
+import { GitHubCommentUi } from './githubCommentUi';
 import { github, OutdatedReviewError, parsePullRequest, prComparison, PullRequest, remoteReview, syncFiles } from './githubSync';
 import { appendReviewText } from './commentText';
 import path from 'node:path';
@@ -17,6 +19,7 @@ class Item extends vscode.TreeItem {
 }
 
 class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentProvider, vscode.Disposable {
+  readonly githubComments = new GitHubCommentUi();
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.changed.event;
   private readonly documents = new Map<string, string>();
@@ -80,7 +83,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     };
     this.disposables.push(watcher, watcher.onDidChange(observe), watcher.onDidCreate(observe), watcher.onDidDelete(observe));
   }
-  dispose(): void { this.disposed = true; if (this.timer) clearTimeout(this.timer); this.threads.forEach(t => t.dispose()); this.disposables.forEach(d => d.dispose()); }
+  dispose(): void { this.githubComments.dispose(); this.disposed = true; if (this.timer) clearTimeout(this.timer); this.threads.forEach(t => t.dispose()); this.disposables.forEach(d => d.dispose()); }
   provideTextDocumentContent(uri: vscode.Uri): string { return this.documents.get(uri.toString()) ?? ''; }
   getTreeItem(item: Item): vscode.TreeItem {
     const pending = item.step && this.pendingReviews.get(item.step.id);
@@ -116,6 +119,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
   }
 
   private resetReview(file?: string): void {
+    this.githubComments.reset();
     this.githubStatus.hide();
     this.renderedDiff = undefined;
     this.epoch++; this.generation++;
@@ -281,9 +285,40 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
         });
         this.items.push(parent);
       }
+      if (guide?.pullRequestUrl) {
+        const pr = parsePullRequest(guide.pullRequestUrl);
+        const link = new Item(`Open PR #${pr.number}`);
+        link.contextValue = 'prLink'; link.iconPath = new vscode.ThemeIcon('github');
+        link.tooltip = guide.pullRequestUrl;
+        link.command = { command: 'agr.openPullRequest', title: 'Open PR' };
+        const comments = new Item('Load GitHub comments');
+        comments.contextValue = 'githubComments'; comments.iconPath = new vscode.ThemeIcon('comment-discussion');
+        comments.command = { command: 'agr.loadComments', title: 'Load GitHub comments' };
+        this.items.unshift(link, comments);
+      }
+      if (guide) {
+        const overview = new Item('Review overview');
+        overview.id = `${this.reviewFile}:overview`;
+        overview.contextValue = 'overview';
+        overview.iconPath = new vscode.ThemeIcon('info');
+        overview.collapsibleState = vscode.TreeItemCollapsibleState.Collapsed;
+        const scope = new Item('Scope');
+        scope.description = scopeLabel(snapshot);
+        scope.tooltip = scopeLabel(snapshot);
+        overview.children.push(scope);
+        if (guide.summary) {
+          const summary = new Item('Read summary');
+          const tooltip = new vscode.MarkdownString(guide.summary);
+          tooltip.isTrusted = false; tooltip.supportHtml = false;
+          summary.tooltip = tooltip;
+          summary.command = { command: 'agr.showOverview', title: 'Read review summary' };
+          overview.children.push(summary);
+        }
+        this.items.unshift(overview);
+      }
       this.view.title = guide?.title ?? 'AGR';
       this.view.message = guide
-        ? `${this.progressLabel(reviewed, allSteps(guide).length)} · ${uncovered.length} unguided\n${scopeLabel(snapshot)}${guide.summary ? '\n' + guide.summary : ''}`
+        ? this.header(guide, snapshot, reviewed)
         : 'Ask your agent to create .agr/<name>.json using the agr skill.';
       this.changed.fire();
       if (this.view.visible) void this.offerGitHubSync();
@@ -319,8 +354,36 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     }
   }
 
+  private header(guide: Guide, snapshot: Snapshot, count: number): string {
+    const missing = uncoveredChanges(guide, snapshot).length;
+    const excerpt = guide.summary ? summaryExcerpt(guide.summary) : '';
+    return `${this.progressLabel(count, allSteps(guide).length)}${missing ? ` · ${missing} unguided` : ''}${excerpt ? `\n\n${excerpt}\n\n` : ''}`;
+  }
+  showOverview(): void {
+    if (!this.guide || !this.snapshot) throw new Error('Open a review first.');
+    const panel = vscode.window.createWebviewPanel('agr.overview', 'AGR review overview', vscode.ViewColumn.Beside, { enableScripts: false, localResourceRoots: [] });
+    panel.webview.html = overviewHtml(this.guide.title, scopeLabel(this.snapshot), this.guide.summary ?? '');
+    this.context.subscriptions.push(panel);
+  }
+  async openPullRequest(): Promise<void> {
+    const url = this.guide?.pullRequestUrl;
+    if (!url) throw new Error('This guide has no PR URL.');
+    parsePullRequest(url);
+    await vscode.env.openExternal(vscode.Uri.parse(url));
+  }
+  async loadComments(): Promise<void> {
+    const guide = this.guide, root = this.root, file = this.reviewFile, epoch = this.epoch;
+    if (!guide || !root || !file || !guide.pullRequestUrl) throw new Error('Open a PR guide with pullRequestUrl before loading comments.');
+    const signature = (g: Guide) => JSON.stringify([g.base, g.scope, g.pullRequestUrl]);
+    const current = async () => {
+      if (this.disposed || !vscode.workspace.isTrusted || this.epoch !== epoch || !this.guide || signature(this.guide) !== signature(guide)) return false;
+      try { return signature(parseGuide(Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(await reviewPath(root, file)))).toString('utf8'))) === signature(guide); } catch { return false; }
+    };
+    await this.githubComments.load({ gh: this.githubClient(root), pr: parsePullRequest(guide.pullRequestUrl), guide, current });
+  }
+
   private progressLabel(reviewed: number, total: number): string {
-    const filled = total ? Math.floor(reviewed / total * 10) : 0;
+    const filled = total && reviewed ? (reviewed === total ? 10 : Math.max(1, Math.min(9, Math.round(reviewed / total * 10)))) : 0;
     return `${'▰'.repeat(filled)}${'▱'.repeat(10 - filled)} ${total ? Math.round(reviewed / total * 100) : 0}% · ${reviewed} / ${total} reviewed`;
   }
 
@@ -413,6 +476,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
         this.threads = nextThreads;
         this.highlights = new Map([[left.toString(), original], [right.toString(), modified]]);
         this.renderedDiff = rendered;
+        this.githubComments.attach(file, left, right, before, after, current.changes.filter(c => c.file === file && c.comparisonId === representative.comparisonId), this.guide);
         this.decorate();
       } catch (error) {
         nextThreads.forEach(t => t.dispose());
@@ -489,7 +553,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     }
     if (this.snapshot && this.snapshot.base === snapshot.base) {
       const count = allSteps(guide).filter(entry => stepState(entry, this.snapshot!, guide.base) === 'reviewed').length;
-      this.view.message = `${this.progressLabel(count, allSteps(guide).length)} · ${uncoveredChanges(guide, this.snapshot).length} unguided\n${scopeLabel(this.snapshot)}${guide.summary ? '\n' + guide.summary : ''}`;
+      this.view.message = this.header(guide, this.snapshot, count);
     }
     this.changed.fire();
     this.schedule();
@@ -706,6 +770,16 @@ export async function activate(context: vscode.ExtensionContext) {
   const command = (name: string, handler: (...args: any[]) => unknown) => context.subscriptions.push(vscode.commands.registerCommand(`agr.${name}`, async (...args) => {
     try { return await handler(...args); } catch (error) { await vscode.window.showErrorMessage((error as Error).message); }
   }));
+  command('showOverview', () => app.showOverview());
+  command('openPullRequest', () => app.openPullRequest());
+  command('loadComments', () => app.loadComments());
+  command('refreshComments', () => app.githubComments.refresh());
+  command('browseComments', () => app.githubComments.browse());
+  command('addComment', () => app.githubComments.add());
+  command('postComment', reply => app.githubComments.post(reply));
+  command('editComment', comment => app.githubComments.edit(comment));
+  command('saveComment', comment => app.githubComments.save(comment));
+  command('cancelCommentEdit', comment => app.githubComments.cancel(comment));
   command('refresh', () => app.refresh());
   command('selectReview', () => app.selectReview());
   command('selectRepository', () => app.selectRepository());
