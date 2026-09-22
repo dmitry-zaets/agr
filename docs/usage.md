@@ -18,7 +18,7 @@ The agent can organize steps around concerns instead of file names. Each step in
 
 ## Review and navigation
 
-The sidebar shows numbered sections, numbered change groups, and checkable filenames. The version 2 guide stores this hierarchy explicitly as sections (`groups`), `changes`, and `files`. Existing guides are upgraded when their changes can still be resolved; valid file approvals are retained. A compact progress bar above the tree shows reviewed file entries; stale entries do not count as reviewed. A short description stays above the list, separated from progress. Expand **Review overview** and select **Read summary** for the full rich Markdown description (headings, lists, tables, links, and code). Raw HTML, command links, and embedded images are disabled. **Open PR #…** opens the guide’s PR independently of Viewed sync.
+The sidebar shows numbered sections, numbered change groups, and checkable filenames. The version 2 guide stores this hierarchy explicitly as sections (`groups`), `changes`, and `files`. Existing guides are upgraded when their changes can still be resolved; valid file approvals are retained. A compact progress bar above the tree shows reviewed file entries; stale entries do not count as reviewed. A short description stays above the list, separated from progress. The **Scope** row shows the comparison directly. Select **Open Summary** for the full rich Markdown description (headings, lists, tables, links, and code). Raw HTML, command links, and embedded images are disabled. **Open PR #…** opens the guide’s PR independently of Viewed sync.
 
 Click a sidebar step to open the complete file comparison in VS Code’s native diff editor, positioned at the step’s relevant lines. The file keeps its original line numbers and surrounding context. Highlighting and review progress remain scoped to the step’s selected changes. Diffs use a reusable preview tab. Opening another step replaces that preview; pin the tab to keep a diff open. This follows VS Code’s editor preview setting. Each entry covers one file in one comparison. AGR splits existing multi-file entries into adjacent entries in the same section and saves the updated guide. Notes and ranges are retained; approval carries over only when its original fingerprint is still valid. Save unsaved guide edits before conversion. Entries with missing change IDs require regeneration first. Notes start collapsed, with comment icons on the relevant lines. Click a comment icon to open the explanation. Check the step when finished; progress is stored in the guide. **Next Step** and **Previous Step** follow the guide's order.
 
@@ -86,13 +86,21 @@ See [review behavior and limitations](review-model.md) for exact scope and appro
 
 ## GitHub comments
 
-For a guide with `pullRequestUrl` and one full pinned PR comparison, select **Load GitHub comments** in the sidebar. This reads threads using your `gh` login and is independent of Viewed sync. Current threads appear as native comments on the relevant side of AGR’s diff, labeled **GitHub**, separate from generated AGR notes. Resolved threads are labeled and remain readable.
+For a guide with `pullRequestUrl` and one full pinned PR comparison, comments load automatically when the guide opens. This reads threads using your `gh` login and is independent of Viewed sync. Current threads appear as native comments on the relevant side of AGR’s diff, labeled **GitHub**, separate from generated AGR notes. Resolved threads are labeled and remain readable.
 
 - Select changed lines and use **AGR: Add GitHub Comment** from the editor context menu, or the GitHub comment gutter control. **Post to GitHub** publishes immediately.
 - Reply in an existing thread with **Post to GitHub**.
 - Use **Edit GitHub Comment** on your own comment, then **Save to GitHub** or **Cancel Edit**. Edits are rejected if the comment changed remotely.
 - Use **AGR: Refresh GitHub Comments** to reload. **AGR: Browse GitHub Discussions** lists all threads and opens them on GitHub, including outdated threads that cannot be attached safely.
 
-Loading is explicit; comments do not poll in the background. Newly opened file diffs display already loaded threads. New inline posts require a guide matching the current PR head and merge base. Comments outside the current snapshot, including some renamed-file anchors, remain accessible through Browse GitHub Discussions.
+Files with GitHub discussions show a comment icon in the tree. Hover to see total, unresolved, and outdated thread counts; the checkbox still shows review progress.
+
+Comments are cached while navigating files. They reload when you switch reviews or change the PR comparison; ordinary refreshes and checkbox updates do not refetch them. Use **Refresh GitHub Comments** for new discussions or to retry a failed load. Loading, errors, and outdated guides are shown in the sidebar; comments do not poll in the background. Newly opened file diffs display already loaded threads. New inline posts require a guide matching the current PR head and merge base. Comments outside the current snapshot, including some renamed-file anchors, remain accessible through Browse GitHub Discussions.
 
 Posting uses individual review-comment endpoints, not a pending review or an approval/request-changes submission. Unsent text is not a saved draft and is cleared when switching reviews or reloading VS Code. Save or cancel active edits before refreshing. If a write reports a connection failure, check GitHub before retrying; AGR never automatically retries writes.
+
+### Multiple explanations in a file
+
+A file entry can include optional `comments` with a snapshot `changeId`, `side` (`original` or `modified`), inclusive hunk offsets `start`/`end`, a `note`, and optional `title`. AGR displays each as a separate collapsed local comment beside the code, alongside the file introduction. These explanations share the file’s checkbox and do not post to GitHub. The helper validates anchors against the selected hunks. Ask the agent to regenerate existing guides to add these explanations.
+
+New files open as read-only snapshot preview tabs without a green diff background. Modified files retain the full native diff. AGR explanations and GitHub comments work in both views.

@@ -72,6 +72,6 @@ AGR 2.0 uses nested version 2 guides. Run **AGR: Update Agent Skills** after upd
 
 ## GitHub discussions
 
-Select **Load GitHub comments** for a pinned PR guide to see existing threads in the native diff. Post individual inline comments and replies, or edit your own comments. Each **Post to GitHub** or **Save to GitHub** action publishes immediately; AGR does not submit an approval or create a pending review. Use **Refresh GitHub Comments** for updates and **Browse GitHub Discussions** for outdated threads.
+Linked PR guides automatically load existing threads into the native diff. Post individual inline comments and replies, or edit your own comments. Each **Post to GitHub** or **Save to GitHub** action publishes immediately; AGR does not submit an approval or create a pending review. Use **Refresh GitHub Comments** for updates and **Browse GitHub Discussions** for outdated threads.
 
-The sidebar includes an **Open PR** link, a short spaced description, and a full Markdown overview.
+The sidebar includes an **Open PR** link, a short inline description, a **Scope** row, and **Open Summary** for the full Markdown description.

@@ -107,6 +107,12 @@ function parseGuide(text) {
           }
         }
       }
+      if (step.comments !== void 0) {
+        if (!Array.isArray(step.comments)) fail(`${step.id}: comments must be an array.`);
+        for (const comment of step.comments) {
+          if (!comment || !step.changes.includes(comment.changeId) || !["original", "modified"].includes(comment.side) || !Number.isSafeInteger(comment.start) || !Number.isSafeInteger(comment.end) || comment.start < 1 || comment.end < comment.start || !string(comment.note) || comment.title !== void 0 && !string(comment.title)) fail(`${step.id}: invalid comment anchor or text.`);
+        }
+      }
       if (step.file !== void 0 && (typeof step.file !== "string" || !step.file || step.file.startsWith("/") || step.file.includes("\\") || step.file.includes("\0") || step.file.split("/").includes(".."))) fail(`${step.id}: file must be repository-relative.`);
       if (step.changeGroup !== void 0 && (!step.changeGroup || !string(step.changeGroup.id) || !string(step.changeGroup.title))) fail(`${step.id}: invalid change group.`);
       if (step.focus !== void 0 && typeof step.focus !== "string") fail(`${step.id}: focus must be text.`);
@@ -132,6 +138,17 @@ function selectedChanges(step, snapshot) {
       newStart: modified ? change.newStart + modified.start - 1 : change.newStart,
       newLines: modified ? modified.end - modified.start + 1 : 0
     }];
+  });
+}
+function explanationAnchors(step, snapshot) {
+  return (step.comments ?? []).map((comment) => {
+    const change = snapshot.changes.find((c) => c.id === comment.changeId);
+    const count = change && (comment.side === "original" ? change.oldLines : change.newLines);
+    const selection = step.selections?.[comment.changeId];
+    const range = selection?.[comment.side];
+    if (!change || change.kind !== "text" || step.file && step.file !== change.file || comment.end > count || selection && (!range || comment.start < range.start || comment.end > range.end)) throw new Error(`${step.id}: comment anchor is outside its reviewed hunk. Regenerate the guide.`);
+    const first = comment.side === "original" ? change.oldStart : change.newStart;
+    return { ...comment, line: first + comment.start - 1, endLine: first + comment.end - 1 };
   });
 }
 function uncoveredChanges(guide, snapshot) {
@@ -164,6 +181,14 @@ function validateCoverage(guide, snapshot) {
     missing: uncoveredChanges(guide, snapshot).map((c) => c.id),
     unknown: [...new Set(allSteps(guide).flatMap((s) => s.changes).filter((id) => !current.has(id)))],
     invalidSelections: allSteps(guide).filter((step) => step.changes.every((id) => current.has(id)) && selectedChanges(step, snapshot).length !== step.changes.length).map((step) => step.id),
+    invalidComments: allSteps(guide).filter((step) => {
+      try {
+        explanationAnchors(step, snapshot);
+        return false;
+      } catch {
+        return true;
+      }
+    }).map((step) => step.id),
     multiFileSteps: allSteps(guide).filter((step) => new Set(snapshot.changes.filter((c) => step.changes.includes(c.id)).map((c) => JSON.stringify([c.comparisonId, c.file]))).size > 1).map((step) => step.id),
     baseMatches: guide.base === snapshot.base
   };
@@ -583,7 +608,7 @@ async function main() {
         const snapshot = await snapshotForGuide(root, review.guide);
         const result = validateCoverage(review.guide, snapshot);
         results.push({ file: `.agr/${review.file}`, ...result });
-        if (!result.baseMatches || result.missing.length || result.unknown.length || result.invalidSelections.length || result.multiFileSteps.length) process.exitCode = 1;
+        if (!result.baseMatches || result.missing.length || result.unknown.length || result.invalidSelections.length || result.invalidComments.length || result.multiFileSteps.length) process.exitCode = 1;
       } catch (error) {
         results.push({ file: `.agr/${review.file}`, error: error.message });
         process.exitCode = 1;

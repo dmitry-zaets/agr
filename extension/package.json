@@ -123,12 +123,6 @@
         "icon": "$(link-external)"
       },
       {
-        "command": "agr.loadComments",
-        "title": "Load GitHub Comments",
-        "category": "AGR",
-        "icon": "$(comment-discussion)"
-      },
-      {
         "command": "agr.refreshComments",
         "title": "Refresh GitHub Comments",
         "category": "AGR",
@@ -217,11 +211,6 @@
         },
         {
           "command": "agr.openPullRequest",
-          "when": "view == agr.steps",
-          "group": "github"
-        },
-        {
-          "command": "agr.loadComments",
           "when": "view == agr.steps",
           "group": "github"
         },

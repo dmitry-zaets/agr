@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm, chmod } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { git, head } from '../src/git';
-import { changeContent, snapshotScope, snapshotForGuide } from '../src/scope';
+import { isAddedFile, changeContent, snapshotScope, snapshotForGuide } from '../src/scope';
 import { Guide, parseGuide, parseScope, stepFingerprint, stepState, validateCoverage } from '../src/model';
 
 async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
@@ -85,7 +85,7 @@ test('scoped guide validates and approval cannot transfer to a different compari
   const snapshot = await snapshotScope(root, { comparisons: [{ id: 'stage', kind: 'staged' }] });
   const guide: Guide = { version: 1, title: 'Staged', base: snapshot.base, comparison: 'scoped', scope: snapshot.scope,
     groups: [{ id: 'group', title: 'Change', steps: [{ id: 'step', title: 'Edit', note: 'Read it.', changes: snapshot.changes.map(c => c.id) }] }] };
-  assert.deepEqual(validateCoverage(parseGuide(JSON.stringify(guide)), await snapshotForGuide(root, guide)), { missing: [], unknown: [], invalidSelections: [], multiFileSteps: [], baseMatches: true });
+  assert.deepEqual(validateCoverage(parseGuide(JSON.stringify(guide)), await snapshotForGuide(root, guide)), { missing: [], unknown: [], invalidSelections: [], invalidComments: [], multiFileSteps: [], baseMatches: true });
   const step = guide.groups[0].steps[0];
   step.review = { status: 'reviewed', fingerprint: stepFingerprint(step, snapshot) };
   assert.equal(stepState(step, snapshot, guide.base), 'reviewed');
@@ -148,4 +148,24 @@ test('combined working scope preserves new-file identity when only staging chang
   const before = await snapshotScope(root, { comparisons: [{ id: 'local', kind: 'working-tree' }] });
   await git(root, ['add', 'new.ts']);
   assert.deepEqual((await snapshotScope(root, before.scope!)).changes, before.changes);
+});
+
+test('added file detection distinguishes empty existing files and comparison baselines', async t => {
+  const root = await fixture(t);
+  await writeFile(path.join(root, 'empty.ts'), '');
+  await git(root, ['add', '.']); await git(root, ['commit', '-qm', 'empty baseline']);
+  const base = (await head(root))!;
+  await writeFile(path.join(root, 'empty.ts'), 'filled\n');
+  await writeFile(path.join(root, 'added.ts'), 'added\n');
+  let snapshot = await snapshotScope(root, { comparisons: [{ id: 'work', kind: 'working-tree', includeUntracked: true }] });
+  assert.equal(await isAddedFile(root, snapshot, snapshot.changes.find(c => c.file === 'empty.ts')!), false);
+  assert.equal(await isAddedFile(root, snapshot, snapshot.changes.find(c => c.file === 'added.ts')!), true);
+  await git(root, ['add', '.']);
+  await writeFile(path.join(root, 'added.ts'), 'changed after staging\n');
+  snapshot = await snapshotScope(root, { comparisons: [{ id: 'stage', kind: 'staged' }, { id: 'work', kind: 'unstaged' }] });
+  assert.equal(await isAddedFile(root, snapshot, snapshot.changes.find(c => c.file === 'added.ts' && c.comparisonId === 'stage')!), true);
+  assert.equal(await isAddedFile(root, snapshot, snapshot.changes.find(c => c.file === 'added.ts' && c.comparisonId === 'work')!), false);
+  await git(root, ['commit', '-qm', 'addition']);
+  snapshot = await snapshotScope(root, { comparisons: [{ id: 'pr', kind: 'revisions', base, head: 'HEAD' }] });
+  assert.equal(await isAddedFile(root, snapshot, snapshot.changes.find(c => c.file === 'added.ts')!), true);
 });

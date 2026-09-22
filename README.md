@@ -31,7 +31,7 @@ AGR 2.0 introduces nested version 2 guides and a progress bar. Update your agent
 
 ## GitHub discussions
 
-For PR guides, use **Load GitHub comments** to show existing review threads in the native diff. Post inline comments and replies, edit your own comments, and open outdated discussions on GitHub. Each post publishes immediately; this does not create a pending review or submit an approval. See [usage](docs/usage.md#github-comments).
+For PR guides, existing review threads load automatically in the native diff. Post inline comments and replies, edit your own comments, and open outdated discussions on GitHub. Each post publishes immediately; this does not create a pending review or submit an approval. See [usage](docs/usage.md#github-comments).
 
 The sidebar keeps a short description above the list, with an **Open PR** action and a rich Markdown overview for the full context.
 

@@ -6,6 +6,8 @@ interface Session { gh: Gh; pr: PullRequest; guide: Guide; current: () => Promis
 interface DocumentContext { uri: vscode.Uri; path: string; side: 'LEFT' | 'RIGHT'; ranges: vscode.Range[]; lines: number; comparison: string }
 interface UiComment extends vscode.Comment { remote: ReviewComment; parent: vscode.CommentThread; savedBody: string }
 export class GitHubCommentUi implements vscode.Disposable {
+  private readonly changed = new vscode.EventEmitter<void>();
+  readonly onDidChange = this.changed.event;
   private controller!: vscode.CommentController;
   private session?: Session;
   private discussion?: Discussion;
@@ -31,8 +33,9 @@ export class GitHubCommentUi implements vscode.Disposable {
     this.threads.clear();
     this.controller.dispose();
     this.createController();
+    this.changed.fire();
   }
-  dispose(): void { this.reset(); this.controller.dispose(); }
+  dispose(): void { this.reset(); this.controller.dispose(); this.changed.dispose(); }
   attach(path: string, left: vscode.Uri, right: vscode.Uri, before: string, after: string, changes: Change[], guide?: Guide): void {
     for (const [side, uri, content] of [['LEFT', left, before], ['RIGHT', right, after]] as const) {
       const lines = content.split('\n').length;
@@ -52,11 +55,19 @@ export class GitHubCommentUi implements vscode.Disposable {
     const discussion = await readDiscussion(session.gh, session.pr);
     if (generation !== this.generation || !await session.current()) return;
     if (this.session && (JSON.stringify(this.session.pr) !== JSON.stringify(session.pr) || this.comparison(this.session.guide) !== this.comparison(session.guide))) this.reset();
-    this.session = session; this.discussion = discussion; this.render();
+    this.session = session; this.discussion = discussion; this.render(); this.changed.fire();
     if (discussion.head !== prComparison(session.guide).head) void vscode.window.showWarningMessage('GitHub comments loaded, but the guide is outdated. Use Browse GitHub Discussions to read them. Refresh the guide before posting inline comments.');
   }
+  fileStatus(paths: string[], guide?: Guide): { total: number; unresolved: number; outdated: number } {
+    if (!guide || !this.session || !this.discussion || this.comparison(guide) !== this.comparison(this.session.guide)) return { total: 0, unresolved: 0, outdated: 0 };
+    const threads = this.discussion.threads.filter(t => paths.includes(t.path) && t.comments.length > 0);
+    return { total: threads.length, unresolved: threads.filter(t => !t.isResolved).length, outdated: threads.filter(t => t.isOutdated || this.discussion!.head !== prComparison(guide).head).length };
+  }
+  status(): { count: number; outdated: boolean } | undefined {
+    return this.discussion && this.session ? { count: this.discussion.threads.length, outdated: this.discussion.head !== prComparison(this.session.guide).head } : undefined;
+  }
   async refresh(): Promise<void> {
-    if (!this.session) throw new Error('Load GitHub comments for this review first.');
+    if (!this.session) throw new Error('GitHub comments are not ready. Use Refresh GitHub Comments to retry.');
     if ([...this.threads.keys()].some(t => t.comments.some(c => c.mode === vscode.CommentMode.Editing))) throw new Error('Save or cancel your comment edit before refreshing.');
     await this.load(this.session);
   }
@@ -95,7 +106,7 @@ export class GitHubCommentUi implements vscode.Disposable {
     return { remote, parent, savedBody: remote.body, body, mode: vscode.CommentMode.Preview, author: { name: remote.author?.login ?? 'Deleted user' }, contextValue: remote.viewerDidAuthor ? 'agrGithubOwn' : 'agrGithubOther' };
   }
   private async active(): Promise<Session> {
-    if (!this.session || !vscode.workspace.isTrusted || !await this.session.current()) throw new Error('The active review changed. Load GitHub comments again.');
+    if (!this.session || !vscode.workspace.isTrusted || !await this.session.current()) throw new Error('The active review changed. Use Refresh GitHub Comments to retry.');
     return this.session;
   }
   async add(): Promise<void> {
@@ -133,6 +144,7 @@ export class GitHubCommentUi implements vscode.Disposable {
         if (index >= 0) this.discussion.threads[index] = updated; else this.discussion.threads.push(updated);
       }
       this.populate(reply.thread, updated);
+      this.changed.fire();
       // Reconcile on explicit refresh; never automatically retry a write.
     } catch (error) {
       throw new Error(`${(error as Error).message} Your text remains in the editor. If the connection failed, check GitHub before posting again to avoid duplicates.`);
@@ -160,7 +172,7 @@ export class GitHubCommentUi implements vscode.Disposable {
     } finally { this.busy.delete(comment); }
   }
   async browse(): Promise<void> {
-    if (!this.discussion) throw new Error('Load GitHub comments first.');
+    if (!this.discussion) throw new Error('GitHub comments are not ready. Use Refresh GitHub Comments to retry.');
     const choices = this.discussion.threads.filter(t => t.comments.length).map(t => ({ label: `${t.path}${t.line ? `:${t.line}` : ''}`, description: `${t.isOutdated ? 'Outdated · ' : ''}${t.isResolved ? 'Resolved · ' : ''}${t.comments.length} comments`, detail: t.comments[0].body, thread: t }));
     if (!choices.length) { void vscode.window.showInformationMessage('No GitHub review discussions yet.'); return; }
     const selected = await vscode.window.showQuickPick(choices, { title: 'GitHub discussions', placeHolder: 'Open a thread on GitHub, including outdated threads' });

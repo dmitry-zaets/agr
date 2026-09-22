@@ -18,7 +18,7 @@ async function main() {
   await require('node:fs/promises').mkdir(path.join(root, '.agr', '.cache'), { recursive: true });
   await writeFile(path.join(root, '.agr', 'fixture.json'), JSON.stringify({
     version: 1, title: 'Fixture review', summary: 'Fixture summary with context that belongs in the overview.', comparison: 'head-to-working-tree', base: snapshot.base,
-    groups: [{ id: 'first', title: 'First concern', steps: [{ id: 'first-step', title: 'Change first value', note: 'Review the first concern.\nKeep [links](command:untrusted) as text.', focus: 'Check the new value.', changes: [snapshot.changes[0].id] }] },
+    groups: [{ id: 'first', title: 'First concern', steps: [{ id: 'first-step', title: 'Change first value', note: 'Review the first concern.\nKeep [links](command:untrusted) as text.', focus: 'Check the new value.', comments: [{ changeId: snapshot.changes[0].id, side: 'original', start: 1, end: 1, note: 'Previous value.' }, { changeId: snapshot.changes[0].id, side: 'modified', start: 1, end: 1, title: 'New value', note: 'Why the new value matters.' }], changes: [snapshot.changes[0].id] }] },
       { id: 'second', title: 'Second concern', steps: [{ id: 'second-step', title: 'Change last value', note: 'Review the second concern.', changes: [snapshot.changes[1].id] }] }]
   }, null, 2));
   let executable = process.env.VSCODE_EXECUTABLE_PATH;

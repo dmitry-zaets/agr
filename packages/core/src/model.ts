@@ -31,7 +31,9 @@ export interface Snapshot {
   scope?: Scope;
   changes: Change[];
 }
+export interface Explanation { changeId: string; side: 'original' | 'modified'; start: number; end: number; note: string; title?: string }
 export interface Step {
+  comments?: Explanation[];
   file?: string;
   changeGroup?: { id: string; title: string };
   id: string;
@@ -131,6 +133,12 @@ export function parseGuide(text: string): Guide {
           }
         }
       }
+      if (step.comments !== undefined) {
+        if (!Array.isArray(step.comments)) fail(`${step.id}: comments must be an array.`);
+        for (const comment of step.comments) {
+          if (!comment || !step.changes.includes(comment.changeId) || !['original', 'modified'].includes(comment.side) || !Number.isSafeInteger(comment.start) || !Number.isSafeInteger(comment.end) || comment.start < 1 || comment.end < comment.start || !string(comment.note) || (comment.title !== undefined && !string(comment.title))) fail(`${step.id}: invalid comment anchor or text.`);
+        }
+      }
       if (step.file !== undefined && (typeof step.file !== 'string' || !step.file || step.file.startsWith('/') || step.file.includes('\\') || step.file.includes('\0') || step.file.split('/').includes('..'))) fail(`${step.id}: file must be repository-relative.`);
       if (step.changeGroup !== undefined && (!step.changeGroup || !string(step.changeGroup.id) || !string(step.changeGroup.title))) fail(`${step.id}: invalid change group.`);
       if (step.focus !== undefined && typeof step.focus !== 'string') fail(`${step.id}: focus must be text.`);
@@ -144,7 +152,7 @@ export function parseGuide(text: string): Guide {
 
 // Review approval is tied to both the code and the explanation the user saw.
 export function stepFingerprint(step: Step, snapshot: Snapshot): string {
-  return hash(JSON.stringify([snapshot.base, step.id, step.title, step.note, step.focus, step.optional, ...(step.changeGroup ? [step.changeGroup.title, step.file] : []), [...step.changes].sort(), Object.entries(step.selections ?? {}).sort(([a], [b]) => a.localeCompare(b))]));
+  return hash(JSON.stringify([snapshot.base, step.id, step.title, step.note, step.focus, step.optional, ...(step.changeGroup ? [step.changeGroup.title, step.file] : []), [...step.changes].sort(), Object.entries(step.selections ?? {}).sort(([a], [b]) => a.localeCompare(b)), ...(step.comments?.length ? [step.comments] : [])]));
 }
 export function selectedChanges(step: Step, snapshot: Snapshot): Change[] {
   return step.changes.flatMap(id => {
@@ -162,8 +170,21 @@ export function selectedChanges(step: Step, snapshot: Snapshot): Change[] {
     }];
   });
 }
+/** Resolve explanation offsets only against the referenced, unchanged hunk. */
+export function explanationAnchors(step: Step, snapshot: Snapshot): (Explanation & { line: number; endLine: number })[] {
+  return (step.comments ?? []).map(comment => {
+    const change = snapshot.changes.find(c => c.id === comment.changeId);
+    const count = change && (comment.side === 'original' ? change.oldLines : change.newLines);
+    const selection = step.selections?.[comment.changeId];
+    const range = selection?.[comment.side];
+    if (!change || change.kind !== 'text' || (step.file && step.file !== change.file) || comment.end > count! || (selection && (!range || comment.start < range.start || comment.end > range.end))) throw new Error(`${step.id}: comment anchor is outside its reviewed hunk. Regenerate the guide.`);
+    const first = comment.side === 'original' ? change.oldStart : change.newStart;
+    return { ...comment, line: first + comment.start - 1, endLine: first + comment.end - 1 };
+  });
+}
 export function stepState(step: Step, snapshot: Snapshot, guideBase: string | null): 'pending' | 'reviewed' | 'stale' {
   if (guideBase !== snapshot.base || selectedChanges(step, snapshot).length !== step.changes.length) return 'stale';
+  try { explanationAnchors(step, snapshot); } catch { return 'stale'; }
   if (step.review?.status !== 'reviewed') return 'pending';
   return step.review.fingerprint === stepFingerprint(step, snapshot) ? 'reviewed' : 'stale';
 }
@@ -192,12 +213,13 @@ export function uncoveredChanges(guide: Guide | undefined, snapshot: Snapshot): 
   });
 }
 
-export function validateCoverage(guide: Guide, snapshot: Snapshot): { missing: string[]; unknown: string[]; invalidSelections: string[]; multiFileSteps: string[]; baseMatches: boolean } {
+export function validateCoverage(guide: Guide, snapshot: Snapshot): { missing: string[]; unknown: string[]; invalidSelections: string[]; invalidComments: string[]; multiFileSteps: string[]; baseMatches: boolean } {
   const current = new Set(snapshot.changes.map(c => c.id));
   return {
     missing: uncoveredChanges(guide, snapshot).map(c => c.id),
     unknown: [...new Set(allSteps(guide).flatMap(s => s.changes).filter(id => !current.has(id)))],
     invalidSelections: allSteps(guide).filter(step => step.changes.every(id => current.has(id)) && selectedChanges(step, snapshot).length !== step.changes.length).map(step => step.id),
+    invalidComments: allSteps(guide).filter(step => { try { explanationAnchors(step, snapshot); return false; } catch { return true; } }).map(step => step.id),
     multiFileSteps: allSteps(guide).filter(step => new Set(snapshot.changes.filter(c => step.changes.includes(c.id)).map(c => JSON.stringify([c.comparisonId, c.file]))).size > 1).map(step => step.id),
     baseMatches: guide.base === snapshot.base
   };
@@ -228,6 +250,7 @@ export function splitFileSteps(guide: Guide, snapshot: Snapshot): Guide {
       const file = changes[0].file;
       const sameFileComparisons = [...files.values()].filter(cs => cs[0].file === file).length > 1;
       const child: Step = { ...step, id, title: `${step.title} · ${file}${sameFileComparisons ? ` [${changes[0].comparisonId}]` : ''}`, changes: changes.map(c => c.id) };
+      if (step.comments) child.comments = step.comments.filter(c => child.changes.includes(c.changeId));
       if (step.selections) child.selections = Object.fromEntries(Object.entries(step.selections).filter(([id]) => child.changes.includes(id)));
       if (reviewed) child.review = { ...step.review!, fingerprint: stepFingerprint(child, snapshot) };
       else if (step.review) child.review = { status: 'pending' };

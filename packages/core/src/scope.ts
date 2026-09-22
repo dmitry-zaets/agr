@@ -63,6 +63,15 @@ export async function comparisonContent(root: string, c: Comparison, file: strin
   if (c.kind === 'staged') return indexContent(root, file);
   return workingContent(root, file);
 }
+/** An empty existing file is still a modification, not a file addition. */
+export async function isAddedFile(root: string, snapshot: Snapshot, change: Change): Promise<boolean> {
+  const comparison = snapshot.scope?.comparisons.find(c => c.id === change.comparisonId);
+  if (snapshot.scope && !comparison) throw new Error('Missing comparison for this change.');
+  if (comparison?.kind === 'unstaged') return !(await git(root, ['ls-files', '--stage', '-z', '--', change.file]));
+  const base = comparison ? comparison.base : snapshot.base;
+  return !base || !(await git(root, ['ls-tree', '-z', base, '--', change.file]));
+}
+
 export async function changeContent(root: string, snapshot: Snapshot, change: Change, side: 'original' | 'modified'): Promise<string> {
   if (!snapshot.scope) return side === 'original' ? baseContent(root, snapshot.base, change.file) : (await workingContent(root, change.file)).toString('utf8');
   const c = snapshot.scope.comparisons.find(c => c.id === change.comparisonId);

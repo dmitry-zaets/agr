@@ -153,6 +153,49 @@
                         "type": "string",
                         "minLength": 1,
                         "description": "Repository-relative path matching every referenced snapshot change."
+                      },
+                      "comments": {
+                        "type": "array",
+                        "description": "Optional local explanations anchored using inclusive 1-based offsets within a referenced hunk. Does not change review coverage.",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "changeId",
+                            "side",
+                            "start",
+                            "end",
+                            "note"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "changeId": {
+                              "type": "string",
+                              "pattern": "^c_[a-f0-9]{64}$"
+                            },
+                            "side": {
+                              "enum": [
+                                "original",
+                                "modified"
+                              ]
+                            },
+                            "start": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "end": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "note": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "title": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          }
+                        }
                       }
                     }
                   }

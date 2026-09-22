@@ -20,18 +20,20 @@ exports.run = async function () {
   // Existing behavior checks operate on file leaves within each section.
   const state = () => {
     const result = app.getState();
-    return { ...result, items: result.items.filter(item => !['overview', 'prLink', 'githubComments'].includes(item.contextValue)).map(section => ({ ...section,
+    return { ...result, items: result.items.filter(item => !['scope', 'summary', 'prLink', 'githubComments'].includes(item.contextValue)).map(section => ({ ...section,
       children: section.children.flatMap(item => item.children.length ? item.children : [item]) })) };
   };
-  const overview = app.getState().items.find(item => item.contextValue === 'overview');
-  assert.equal(overview.collapsibleState, vscode.TreeItemCollapsibleState.Collapsed);
-  assert.equal(overview.children[0].label, 'Scope');
+  assert.ok(!app.getState().items.some(item => item.label === 'Review overview'));
+  const scopeRow = app.getState().items.find(item => item.contextValue === 'scope');
+  assert.equal(scopeRow.label, 'Scope');
+  assert.equal(scopeRow.children.length, 0);
+  assert.ok(!scopeRow.collapsibleState);
   assert.ok(!app.view.message.includes('Uncommitted changes'), 'scope stays out of progress header');
   assert.ok(app.view.message.includes('\n\nFixture summary'), 'short description is spaced apart from progress');
-  const summary = overview.children.find(item => item.label === 'Read summary');
+  const summary = app.getState().items.find(item => item.label === 'Open Summary');
   assert.ok(summary);
   assert.equal(summary.command.command, 'agr.showOverview');
-  const section = app.getState().items.find(item => !['overview', 'prLink', 'githubComments'].includes(item.contextValue));
+  const section = app.getState().items.find(item => !['scope', 'summary', 'prLink', 'githubComments'].includes(item.contextValue));
   assert.equal(section.label, '1 First concern');
   assert.match(app.view.message, /▱{10} 0% · 0 \/ 2 reviewed/);
   assert.equal(section.children[0].label, '1.1 Change first value');
@@ -56,6 +58,13 @@ exports.run = async function () {
   assert.ok(vscode.workspace.textDocuments.some(d => d.uri.scheme === 'agr' && d.getText().includes('first = 10')), 'working snapshot contains new code');
   let diffEditor = vscode.window.visibleTextEditors.find(e => e.document.uri.path === '/full/Working-tree/feature.ts');
   assert.ok(diffEditor);
+  assert.equal(app.threads.length, 3, 'file introduction plus two anchored explanations');
+  assert.equal(app.threads[1].uri.path, '/full/HEAD/feature.ts');
+  assert.equal(app.threads[2].uri.path, '/full/Working-tree/feature.ts');
+  assert.equal(app.threads[2].range.start.line, 0);
+  assert.equal(app.threads[2].label, 'New value');
+  assert.ok(app.threads.every(t => t.collapsibleState === vscode.CommentThreadCollapsibleState.Collapsed));
+  assert.equal(vscode.window.tabGroups.activeTabGroup.activeTab.label, 'feature.ts');
   assert.ok(!diffEditor.document.getText().includes('⋯ Original'), 'source-location labels are absent from code');
   assert.ok(diffEditor.document.getText().includes('last = 30'), 'default diff includes all file changes');
   await app.open(step);
@@ -130,6 +139,10 @@ exports.run = async function () {
   assert.ok(vscode.window.visibleTextEditors.some(editor => editor.document.uri.path === '/full/Working-tree/new.ts' && editor.selection.start.line === 2), 'second range opens directly at its first selected code line');
   assert.ok(vscode.window.visibleTextEditors.filter(editor => editor.document.uri.path === '/full/Working-tree/new.ts').every(editor => editor.selection.isEmpty), 'range navigation moves the cursor without a selection overlay');
   assert.ok(vscode.window.visibleTextEditors.filter(e => e.document.uri.path === '/full/Working-tree/new.ts').every(e => e.document.getText().includes('one\n') && e.document.getText().includes('two\n')), 'full file remains visible when reviewing a slice');
+  assert.ok(vscode.window.tabGroups.activeTabGroup.activeTab.input instanceof vscode.TabInputText, 'new files use a normal editor without diff backgrounds');
+  assert.equal(vscode.window.tabGroups.activeTabGroup.activeTab.isPreview, true);
+  assert.ok(app.threads.every(t => t.uri.path === '/full/Working-tree/new.ts'), 'AGR notes stay attached to the added file');
+  assert.ok([...app.githubComments.documents.values()].some(d => d.path === 'new.ts' && d.side === 'RIGHT'), 'GitHub comment anchors are registered for the plain editor');
   await app.toggle(lastPart, true);
   assert.equal(state().items[2].children[0].checkboxState, vscode.TreeItemCheckboxState.Unchecked, 'first slice remains pending');
   assert.equal(state().items[2].children[1].checkboxState, vscode.TreeItemCheckboxState.Checked, 'second slice is reviewed');
@@ -174,8 +187,15 @@ exports.run = async function () {
   let releaseRequest;
   let gate = new Promise(resolve => { releaseRequest = resolve; });
   const mutations = [];
+  let commentLoads = 0;
+  let failCommentLoad = false;
   app.githubClient = () => async args => {
     await gate;
+    if (args.some(a => a.startsWith('query=query'))) {
+      commentLoads++;
+      if (failCommentLoad) throw new Error('Simulated comment read failure');
+      return { data: { repository: { pullRequest: { headRefOid: committed, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } };
+    }
     if (args.includes('graphql')) { mutations.push(args.join(' ')); return {}; }
     if (args.includes('--paginate')) return [[{ filename: 'feature.ts', status: 'modified' }]];
     if (args[1].includes('/compare/')) return { merge_base_commit: { sha: baseCommit } };
@@ -205,6 +225,20 @@ exports.run = async function () {
   app.askGitHubSync = async () => { promptCount++; return answer; };
   await fs.writeFile(metadataFile, JSON.stringify(metadataGuide));
   await app.refresh();
+  await app.commentsPending;
+  assert.equal(commentLoads, 1, 'linked guide loads comments automatically');
+  await app.refresh(); await app.commentsPending;
+  await app.open(state().items[0].children[0]);
+  assert.equal(commentLoads, 1, 'refresh and file navigation reuse loaded comments');
+  assert.ok(app.getState().items.some(item => item.label === 'GitHub comments: 0 threads'));
+  failCommentLoad = true;
+  await app.loadComments();
+  assert.ok(app.getState().items.some(item => item.label === 'GitHub comments unavailable · Retry'));
+  await app.refresh(); await app.commentsPending;
+  assert.equal(commentLoads, 2, 'automatic refresh does not repeatedly retry failures');
+  failCommentLoad = false;
+  await app.loadComments();
+  assert.equal(commentLoads, 3, 'manual refresh retries');
   async function settlePrompt() {
     for (let i = 0; i < 100 && app.githubPromptPending; i++) await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(app.githubPromptPending, false, 'prompt settled');
@@ -238,6 +272,8 @@ exports.run = async function () {
   await app.disconnectGitHub();
   delete metadataGuide.pullRequestUrl;
   await fs.writeFile(metadataFile, JSON.stringify(metadataGuide)); await app.refresh();
+
+  assert.equal(app.githubComments.status(), undefined, 'removing PR metadata clears cached comments');
 
   // Two guides deliberately share step IDs: identity and writes must stay isolated.
   const firstFile = path.join(root, '.agr', 'fixture.json');
@@ -288,8 +324,8 @@ exports.run = async function () {
   assert.equal(state().reviewFile, 'fixture.json', 'deleting a selected guide chooses the remaining review');
 
   await loadScope({ comparisons: [{ id: 'legacy', kind: 'working-tree', paths: ['feature.ts', 'new.ts'] }] });
-  assert.equal(app.getState().items.find(item => !['overview', 'prLink', 'githubComments'].includes(item.contextValue)).children.length, 1, 'split files share a change group');
-  assert.equal(app.getState().items.find(item => !['overview', 'prLink', 'githubComments'].includes(item.contextValue)).children[0].children.length, 2, 'each file is independently checkable');
+  assert.equal(app.getState().items.find(item => !['scope', 'summary', 'prLink', 'githubComments'].includes(item.contextValue)).children.length, 1, 'split files share a change group');
+  assert.equal(app.getState().items.find(item => !['scope', 'summary', 'prLink', 'githubComments'].includes(item.contextValue)).children[0].children.length, 2, 'each file is independently checkable');
   const splitItems = state().items[0].children;
   assert.equal(splitItems.length, 2, 'old multi-file steps become separate review entries');
   const wire = JSON.parse(await fs.readFile(firstFile, 'utf8'));
@@ -343,6 +379,20 @@ exports.run = async function () {
   commentUi.attach('comment.ts', leftCommentUri, rightCommentUri, 'old\nold\n', 'new\nnew\n', [{ id: 'c_test', file: 'comment.ts', kind: 'text', oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, patch: '' }], commentGuide);
   await commentUi.load({ gh: transport, pr: commentPr, guide: commentGuide, current: async () => true });
   assert.equal(commentUi.threads.size, 1, 'outdated thread is not attached to current code');
+  assert.deepEqual(commentUi.fileStatus(['comment.ts'], commentGuide), { total: 2, unresolved: 1, outdated: 1 });
+  assert.equal(commentUi.fileStatus(['other.ts'], commentGuide).total, 0);
+  const savedGuide = app.guide;
+  app.guide = commentGuide;
+  const fileItem = new vscode.TreeItem('comment.ts');
+  fileItem.step = { id: 'comment-indicator', file: 'comment.ts' };
+  fileItem.checkboxState = vscode.TreeItemCheckboxState.Checked;
+  fileItem.tooltip = new vscode.MarkdownString('Review note');
+  const decoratedFile = app.getTreeItem(fileItem);
+  assert.equal(decoratedFile.iconPath.id, 'comment-discussion');
+  assert.equal(decoratedFile.checkboxState, vscode.TreeItemCheckboxState.Checked);
+  assert.match(decoratedFile.tooltip.value, /2 discussion threads/);
+  assert.equal(fileItem.tooltip.value, 'Review note', 'rendering does not accumulate tooltip text');
+  app.guide = savedGuide;
   const githubThread = [...commentUi.threads.keys()][0];
   assert.equal(githubThread.label, 'GitHub · Resolved');
   assert.equal(githubThread.comments[0].body.isTrusted, false);

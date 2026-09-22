@@ -8,10 +8,10 @@ import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { outdatedSkills, updateInstalledSkills } from './skillUpdate';
 import { installSkills, skillTargets, InstallScope } from './skillInstall';
-import { allSteps, Change, Guide, hash, parseGuide, selectedChanges, Snapshot, Step, stepFingerprint, nestGuide, serializeGuide, stepState, uncoveredChanges } from '../../packages/core/src/model';
+import { explanationAnchors, allSteps, Change, Guide, hash, parseGuide, selectedChanges, Snapshot, Step, stepFingerprint, nestGuide, serializeGuide, stepState, uncoveredChanges } from '../../packages/core/src/model';
 import { git, repositoryRoot } from '../../packages/core/src/git';
 import { listReviews, reviewPath, ReviewFile } from '../../packages/core/src/reviews';
-import { changeContent, snapshotForGuide, scopeLabel } from '../../packages/core/src/scope';
+import { isAddedFile, changeContent, snapshotForGuide, scopeLabel } from '../../packages/core/src/scope';
 
 class Item extends vscode.TreeItem {
   children: Item[] = [];
@@ -19,6 +19,10 @@ class Item extends vscode.TreeItem {
 }
 
 class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentProvider, vscode.Disposable {
+  private commentsKey?: string;
+  private commentsPending?: Promise<void>;
+  private commentsStatus = 'GitHub comments: loading…';
+  private commentsError?: string;
   readonly githubComments = new GitHubCommentUi();
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.changed.event;
@@ -67,6 +71,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
   constructor(private context: vscode.ExtensionContext) {
     this.view = vscode.window.createTreeView('agr.steps', { treeDataProvider: this, manageCheckboxStateManually: true, showCollapseAll: true });
     this.disposables.push(this.githubStatus, this.view, this.comments, this.decoration, this.changed,
+      this.githubComments.onDidChange(() => this.changed.fire()),
       vscode.workspace.registerTextDocumentContentProvider('agr', this),
       this.view.onDidChangeVisibility(event => { if (event.visible) void this.offerGitHubSync(); }),
       this.view.onDidChangeCheckboxState(event => {
@@ -87,7 +92,18 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
   provideTextDocumentContent(uri: vscode.Uri): string { return this.documents.get(uri.toString()) ?? ''; }
   getTreeItem(item: Item): vscode.TreeItem {
     const pending = item.step && this.pendingReviews.get(item.step.id);
-    if (!pending) return item;
+    if (!pending) {
+      const files = item.step?.file ? [item.step.file] : item.change ? [item.change.file] : item.step ? this.snapshot?.changes.filter(c => item.step!.changes.includes(c.id)).map(c => c.file) ?? [] : [];
+      const comments = this.githubComments.fileStatus(files, this.guide);
+      if (!comments.total) return item;
+      const tooltip = new vscode.MarkdownString();
+      if (item.tooltip instanceof vscode.MarkdownString) tooltip.appendMarkdown(item.tooltip.value);
+      else if (item.tooltip) tooltip.appendText(item.tooltip);
+      appendReviewText(tooltip.appendMarkdown('\n\n'), `GitHub: ${comments.total} discussion thread${comments.total === 1 ? '' : 's'} · ${comments.unresolved} unresolved · ${comments.outdated} outdated`);
+      return Object.assign(new vscode.TreeItem(item.label ?? ''), item, {
+        iconPath: new vscode.ThemeIcon('comment-discussion'), tooltip
+      });
+    }
     return Object.assign(new vscode.TreeItem(item.label ?? ''), item, {
       iconPath: new vscode.ThemeIcon('loading~spin'),
       description: 'Saving review…',
@@ -120,6 +136,8 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
 
   private resetReview(file?: string): void {
     this.githubComments.reset();
+    this.commentsKey = undefined; this.commentsPending = undefined;
+    this.commentsStatus = 'GitHub comments: loading…'; this.commentsError = undefined;
     this.githubStatus.hide();
     this.renderedDiff = undefined;
     this.epoch++; this.generation++;
@@ -291,36 +309,39 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
         link.contextValue = 'prLink'; link.iconPath = new vscode.ThemeIcon('github');
         link.tooltip = guide.pullRequestUrl;
         link.command = { command: 'agr.openPullRequest', title: 'Open PR' };
-        const comments = new Item('Load GitHub comments');
+        const comments = new Item(this.commentsStatus);
         comments.contextValue = 'githubComments'; comments.iconPath = new vscode.ThemeIcon('comment-discussion');
-        comments.command = { command: 'agr.loadComments', title: 'Load GitHub comments' };
+        comments.tooltip = this.commentsError ?? 'Comments load automatically. Click to browse discussions; use Refresh GitHub Comments to fetch updates.';
+        comments.command = { command: this.commentsError ? 'agr.refreshComments' : 'agr.browseComments', title: 'GitHub comments' };
         this.items.unshift(link, comments);
       }
       if (guide) {
-        const overview = new Item('Review overview');
-        overview.id = `${this.reviewFile}:overview`;
-        overview.contextValue = 'overview';
-        overview.iconPath = new vscode.ThemeIcon('info');
-        overview.collapsibleState = vscode.TreeItemCollapsibleState.Collapsed;
         const scope = new Item('Scope');
+        scope.id = `${this.reviewFile}:scope`;
+        scope.contextValue = 'scope';
+        scope.iconPath = new vscode.ThemeIcon('git-compare');
         scope.description = scopeLabel(snapshot);
         scope.tooltip = scopeLabel(snapshot);
-        overview.children.push(scope);
+        const details = [scope];
         if (guide.summary) {
-          const summary = new Item('Read summary');
+          const summary = new Item('Open Summary');
+          summary.id = `${this.reviewFile}:summary`;
+          summary.contextValue = 'summary';
+          summary.iconPath = new vscode.ThemeIcon('markdown');
           const tooltip = new vscode.MarkdownString(guide.summary);
           tooltip.isTrusted = false; tooltip.supportHtml = false;
           summary.tooltip = tooltip;
-          summary.command = { command: 'agr.showOverview', title: 'Read review summary' };
-          overview.children.push(summary);
+          summary.command = { command: 'agr.showOverview', title: 'Open Summary' };
+          details.push(summary);
         }
-        this.items.unshift(overview);
+        this.items.unshift(...details);
       }
       this.view.title = guide?.title ?? 'AGR';
       this.view.message = guide
         ? this.header(guide, snapshot, reviewed)
         : 'Ask your agent to create .agr/<name>.json using the agr skill.';
       this.changed.fire();
+      void this.loadComments(false);
       if (this.view.visible) void this.offerGitHubSync();
     } catch (error) {
       if (generation !== this.generation) return;
@@ -361,7 +382,7 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
   }
   showOverview(): void {
     if (!this.guide || !this.snapshot) throw new Error('Open a review first.');
-    const panel = vscode.window.createWebviewPanel('agr.overview', 'AGR review overview', vscode.ViewColumn.Beside, { enableScripts: false, localResourceRoots: [] });
+    const panel = vscode.window.createWebviewPanel('agr.overview', 'AGR Summary', vscode.ViewColumn.Active, { enableScripts: false, localResourceRoots: [] });
     panel.webview.html = overviewHtml(this.guide.title, scopeLabel(this.snapshot), this.guide.summary ?? '');
     this.context.subscriptions.push(panel);
   }
@@ -371,15 +392,52 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     parsePullRequest(url);
     await vscode.env.openExternal(vscode.Uri.parse(url));
   }
-  async loadComments(): Promise<void> {
+  async loadComments(force = true): Promise<void> {
     const guide = this.guide, root = this.root, file = this.reviewFile, epoch = this.epoch;
-    if (!guide || !root || !file || !guide.pullRequestUrl) throw new Error('Open a PR guide with pullRequestUrl before loading comments.');
+    if (!guide || !root || !file || !guide.pullRequestUrl || !vscode.workspace.isTrusted) {
+      if (this.commentsKey) {
+        this.commentsKey = undefined; this.commentsPending = undefined;
+        this.commentsStatus = 'GitHub comments: loading…'; this.commentsError = undefined;
+        this.githubComments.reset();
+      }
+      if (force) throw new Error('Open a trusted PR guide with pullRequestUrl first.');
+      return;
+    }
+    const key = JSON.stringify([root, file, epoch, guide.base, guide.scope, guide.pullRequestUrl]);
+    if (key === this.commentsKey && (this.commentsPending || !force)) {
+      this.setCommentsStatus(this.commentsStatus, this.commentsError);
+      return this.commentsPending;
+    }
+    this.commentsKey = key;
+    this.setCommentsStatus('GitHub comments: loading…');
     const signature = (g: Guide) => JSON.stringify([g.base, g.scope, g.pullRequestUrl]);
     const current = async () => {
       if (this.disposed || !vscode.workspace.isTrusted || this.epoch !== epoch || !this.guide || signature(this.guide) !== signature(guide)) return false;
       try { return signature(parseGuide(Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(await reviewPath(root, file)))).toString('utf8'))) === signature(guide); } catch { return false; }
     };
-    await this.githubComments.load({ gh: this.githubClient(root), pr: parsePullRequest(guide.pullRequestUrl), guide, current });
+    const pending = (async () => {
+      try {
+        await this.githubComments.load({ gh: this.githubClient(root), pr: parsePullRequest(guide.pullRequestUrl!), guide, current });
+        if (this.commentsKey !== key || !await current()) return;
+        const status = this.githubComments.status();
+        if (status) this.setCommentsStatus(status.outdated ? `GitHub comments: guide outdated (${status.count} threads)` : `GitHub comments: ${status.count} threads`);
+      } catch (error) {
+        if (this.commentsKey === key) this.setCommentsStatus('GitHub comments unavailable · Retry', (error as Error).message);
+      } finally { if (this.commentsKey === key) this.commentsPending = undefined; }
+    })();
+    this.commentsPending = pending;
+    await pending;
+  }
+
+  private setCommentsStatus(label: string, error?: string): void {
+    this.commentsStatus = label; this.commentsError = error;
+    const item = this.items.find(i => i.contextValue === 'githubComments');
+    if (!item) return;
+    item.label = label;
+    item.iconPath = new vscode.ThemeIcon(error || label.includes('outdated') ? 'warning' : label.includes('loading') ? 'loading~spin' : 'comment-discussion');
+    item.tooltip = error ?? (label.includes('outdated') ? 'Refresh the guide to show inline comments. Click to browse discussions on GitHub.' : 'Click to browse threads. Use Refresh GitHub Comments for updates.');
+    item.command = { command: error ? 'agr.refreshComments' : 'agr.browseComments', title: 'GitHub comments' };
+    this.changed.fire();
   }
 
   private progressLabel(reviewed: number, total: number): string {
@@ -437,18 +495,23 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
     const rightLabel = comparison ? `${comparison.id}/${comparison.kind === 'staged' ? 'Index' : comparison.head?.slice(0, 8) ?? 'Working-tree'}` : 'Working-tree';
     const left = this.virtual(file, `full/${leftLabel}`, before);
     const right = this.virtual(file, `full/${rightLabel}`, after);
+    const addedFile = before === '' && await isAddedFile(this.root, current, representative);
+    if (!isCurrent()) return;
     const original = changes.filter(c => c.oldLines > 0).map(c => this.range(c.oldStart, c.oldLines, before));
     const modified = changes.filter(c => c.newLines > 0).map(c => this.range(c.newStart, c.newLines, after));
     const first = changes[0];
     const target = first.newLines ? this.range(first.newStart, first.newLines, after) : this.range(first.newStart || 1, 1, after);
+    const explanations = step ? explanationAnchors(step, current) : [];
     const fingerprint = step ? stepFingerprint(step, current) : undefined;
-    const rendered = JSON.stringify([left.toString(), right.toString(), fingerprint, changes]);
+    const rendered = JSON.stringify([left.toString(), right.toString(), fingerprint, changes, addedFile]);
     const transition = this.openTransition.then(async () => {
       if (!isCurrent()) return;
       this.activeId = step?.id; this.activeItem = item;
       if (step && fingerprint) this.openedFingerprints.set(step.id, fingerprint);
       const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
-      if (this.renderedDiff === rendered && input instanceof vscode.TabInputTextDiff && input.original.toString() === left.toString() && input.modified.toString() === right.toString()) return;
+      if (this.renderedDiff === rendered && (addedFile
+        ? input instanceof vscode.TabInputText && input.uri.toString() === right.toString()
+        : input instanceof vscode.TabInputTextDiff && input.original.toString() === left.toString() && input.modified.toString() === right.toString())) return;
       const oldThreads = this.threads;
       const oldHighlights = this.highlights;
       const nextThreads: vscode.CommentThread[] = [];
@@ -463,6 +526,16 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
         thread.label = step.title; thread.canReply = false;
         thread.collapsibleState = vscode.CommentThreadCollapsibleState.Collapsed;
         nextThreads.push(thread);
+        for (const explanation of explanations) {
+          const body = new vscode.MarkdownString();
+          appendReviewText(body, explanation.note);
+          const uri = explanation.side === 'original' ? left : right;
+          const thread = this.comments.createCommentThread(uri, new vscode.Range(explanation.line - 1, 0, explanation.endLine - 1, 0), [{ body, mode: vscode.CommentMode.Preview, author: { name: 'AGR' } }]);
+          thread.label = explanation.title ?? step.title;
+          thread.canReply = false;
+          thread.collapsibleState = vscode.CommentThreadCollapsibleState.Collapsed;
+          nextThreads.push(thread);
+        }
       }
       // Prepare annotations before displaying the new editor. Keep the old
       // view intact during Git reads and dispose its annotations only after switching.
@@ -470,7 +543,9 @@ class Agr implements vscode.TreeDataProvider<Item>, vscode.TextDocumentContentPr
       this.highlights = new Map(oldHighlights);
       this.highlights.set(left.toString(), original); this.highlights.set(right.toString(), modified);
       try {
-        await vscode.commands.executeCommand('vscode.diff', left, right, `${step?.title ?? 'Unguided change'} — ${path.basename(file)} (full diff)${comparison ? ` [${comparison.title ?? comparison.id}]` : ''}`, { preview: true, selection: new vscode.Range(target.start, target.start) });
+        const options = { preview: true, selection: new vscode.Range(target.start, target.start) };
+        if (addedFile) await vscode.window.showTextDocument(right, options);
+        else await vscode.commands.executeCommand('vscode.diff', left, right, path.basename(file), options);
         if (epoch !== this.epoch || this.disposed) { nextThreads.forEach(t => t.dispose()); return; }
         oldThreads.forEach(t => t.dispose());
         this.threads = nextThreads;
@@ -772,8 +847,7 @@ export async function activate(context: vscode.ExtensionContext) {
   }));
   command('showOverview', () => app.showOverview());
   command('openPullRequest', () => app.openPullRequest());
-  command('loadComments', () => app.loadComments());
-  command('refreshComments', () => app.githubComments.refresh());
+  command('refreshComments', () => app.loadComments());
   command('browseComments', () => app.githubComments.browse());
   command('addComment', () => app.githubComments.add());
   command('postComment', reply => app.githubComments.post(reply));
